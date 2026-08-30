@@ -189,7 +189,10 @@ final class MotorRevelado {
             }
             base = aplicarBalanceBlancosNoRAW(a: imagen, parametros: parametros)
         }
-        return aplicarAjustes(a: base, parametros: parametros)
+        let cubo = parametros.hslEsNeutro
+            ? nil
+            : ProcesadoColor.generarCuboHSL(parametros.hsl)
+        return aplicarAjustes(a: base, parametros: parametros, cuboHSL: cubo)
     }
 
     /// TIFF de 16 bits por canal con perfil Display P3 incrustado (§5.7):
@@ -300,10 +303,48 @@ final class MotorRevelado {
         return (r / maximo, g / maximo, b / maximo)
     }
 
-    /// Aplica la receta completa de tono y color sobre una imagen ya revelada.
-    func aplicarAjustes(a origen: CIImage,
-                        parametros p: ParametrosEdicion) -> CIImage {
+    /// Geometría: giros de 90°, espejo y enderezado del horizonte. Se aplica
+    /// antes que cualquier ajuste de color. Al enderezar, la imagen se amplía
+    /// lo justo para que no asomen los bordes vacíos y se recorta al marco.
+    func aplicarGeometria(a origen: CIImage,
+                          parametros p: ParametrosEdicion) -> CIImage {
         var imagen = origen
+
+        if p.volteadoH {
+            imagen = imagen.oriented(.upMirrored)
+        }
+        switch ((p.rotacion % 4) + 4) % 4 {
+        case 1: imagen = imagen.oriented(.right)
+        case 2: imagen = imagen.oriented(.down)
+        case 3: imagen = imagen.oriented(.left)
+        default: break
+        }
+
+        if p.enderezar != 0 {
+            let marco = imagen.extent
+            let angulo = p.enderezar * .pi / 180
+            // Escala mínima para que el marco original quede cubierto
+            // tras el giro (así no aparecen esquinas vacías).
+            let seno = abs(sin(angulo)), coseno = abs(cos(angulo))
+            let escala = max(coseno + seno * marco.height / marco.width,
+                             coseno + seno * marco.width / marco.height)
+            let centroX = marco.midX, centroY = marco.midY
+            let transformacion = CGAffineTransform(translationX: centroX, y: centroY)
+                .rotated(by: CGFloat(-angulo))
+                .scaledBy(x: CGFloat(escala), y: CGFloat(escala))
+                .translatedBy(x: -centroX, y: -centroY)
+            imagen = imagen.transformed(by: transformacion).cropped(to: marco)
+        }
+        return imagen
+    }
+
+    /// Aplica la receta completa de tono y color sobre una imagen ya revelada.
+    /// `cuboHSL` es la tabla del mezclador generada por ProcesadoColor (se
+    /// pasa ya hecha para no recalcularla en cada fotograma).
+    func aplicarAjustes(a origen: CIImage,
+                        parametros p: ParametrosEdicion,
+                        cuboHSL: Data? = nil) -> CIImage {
+        var imagen = aplicarGeometria(a: origen, parametros: p)
 
         // Exposición: en luz lineal, sumar EV es multiplicar por 2^EV,
         // exactamente como abrir el diafragma.
@@ -385,6 +426,129 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
+        // Curva de tonos (general + por canal), muestreada a 256 pasos.
+        // Se evalúa en sRGB con gamma, que es donde la curva resulta natural
+        // al ojo; el filtro convierte ida y vuelta desde el espacio lineal.
+        if !p.curvaEsNeutra {
+            let filtro = CIFilter.colorCurves()
+            filtro.inputImage = imagen
+            filtro.curvesData = ProcesadoColor.datosCurvas(
+                luma: p.curvaLuma, r: p.curvaR, v: p.curvaV, a: p.curvaA)
+            filtro.curvesDomain = CIVector(x: 0, y: 1)
+            filtro.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Mezclador HSL: el cubo de color con los 8 rangos, en una pasada.
+        if let cuboHSL, !p.hslEsNeutro {
+            let filtro = CIFilter.colorCubeWithColorSpace()
+            filtro.inputImage = imagen
+            filtro.cubeData = cuboHSL
+            filtro.cubeDimension = 33
+            filtro.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Textura: realce fino (radio pequeño), como acentuar el grano fino.
+        if p.textura != 0 {
+            let filtro = CIFilter.unsharpMask()
+            filtro.inputImage = imagen
+            filtro.radius = 8
+            filtro.intensity = Float(p.textura / 100.0 * 0.8)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Claridad: contraste local (radio grande), el "punch" de los medios.
+        if p.claridad != 0 {
+            let filtro = CIFilter.unsharpMask()
+            filtro.inputImage = imagen
+            filtro.radius = 60
+            filtro.intensity = Float(p.claridad / 100.0 * 0.5)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Reducción de ruido, antes del enfoque para no afilar el ruido.
+        if p.reduccionRuido > 0 || p.reduccionRuidoColor > 0 {
+            let filtro = CIFilter.noiseReduction()
+            filtro.inputImage = imagen
+            filtro.noiseLevel = Float(p.reduccionRuido / 100.0 * 0.1)
+            filtro.sharpness = Float(1.0 - p.reduccionRuidoColor / 100.0 * 0.6)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Enfoque de luminancia (no toca el color, solo el detalle).
+        if p.enfoque > 0 {
+            let filtro = CIFilter.sharpenLuminance()
+            filtro.inputImage = imagen
+            filtro.sharpness = Float(p.enfoque / 100.0 * 1.2)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Viñeta, al final del todo: enmarca el resultado ya revelado.
+        if p.vineta != 0 {
+            let filtro = CIFilter.vignette()
+            filtro.inputImage = imagen
+            filtro.intensity = Float(p.vineta / 100.0)
+            filtro.radius = 2
+            imagen = filtro.outputImage ?? imagen
+        }
+
         return imagen
+    }
+
+    /// Luminosidad media de la imagen (0...1, en valores de pantalla), para
+    /// el botón Auto: es el fotómetro de la app.
+    func luminanciaMedia(de imagen: CIImage) -> Double? {
+        let filtro = CIFilter.areaAverage()
+        filtro.inputImage = imagen
+        filtro.extent = imagen.extent
+        guard let promedio = filtro.outputImage else { return nil }
+        var pixel = [UInt8](repeating: 0, count: 4)
+        contexto.render(promedio, toBitmap: &pixel, rowBytes: 4,
+                        bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                        format: .RGBA8, colorSpace: espacioSalidaPantalla)
+        let r = Double(pixel[0]) / 255, g = Double(pixel[1]) / 255, b = Double(pixel[2]) / 255
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+    }
+
+    // =========================================================================
+    // Histograma en vivo: cuenta la distribución de tonos del resultado y
+    // devuelve 64 alturas normalizadas por canal (R, V, A), listas para
+    // dibujarse. Se calcula sobre la imagen de previsualización.
+    // =========================================================================
+    func calcularHistograma(de imagen: CIImage) -> (r: [Float], v: [Float], a: [Float])? {
+        let bins = 64
+        let filtro = CIFilter.areaHistogram()
+        filtro.inputImage = imagen
+        filtro.extent = imagen.extent
+        filtro.count = bins
+        filtro.scale = 1
+        guard let salida = filtro.outputImage else { return nil }
+
+        var pixeles = [Float](repeating: 0, count: bins * 4)
+        pixeles.withUnsafeMutableBytes { puntero in
+            contexto.render(salida,
+                            toBitmap: puntero.baseAddress!,
+                            rowBytes: bins * 4 * MemoryLayout<Float>.size,
+                            bounds: CGRect(x: 0, y: 0, width: bins, height: 1),
+                            format: .RGBAf,
+                            colorSpace: nil)
+        }
+
+        var r = [Float](repeating: 0, count: bins)
+        var v = [Float](repeating: 0, count: bins)
+        var a = [Float](repeating: 0, count: bins)
+        for i in 0..<bins {
+            r[i] = pixeles[i * 4]
+            v[i] = pixeles[i * 4 + 1]
+            a[i] = pixeles[i * 4 + 2]
+        }
+        // Normalizar al pico (ignorando los extremos, que suelen dispararse).
+        var pico: Float = 0.0001
+        for i in 1..<(bins - 1) {
+            pico = max(pico, r[i], v[i], a[i])
+        }
+        func normalizar(_ c: [Float]) -> [Float] { c.map { min(1, $0 / pico) } }
+        return (normalizar(r), normalizar(v), normalizar(a))
     }
 }
