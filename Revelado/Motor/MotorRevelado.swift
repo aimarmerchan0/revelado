@@ -18,6 +18,7 @@
 // =============================================================================
 
 import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// Errores que el motor puede comunicar, con mensaje en claro.
 enum ErrorMotor: Error, LocalizedError {
@@ -144,6 +145,130 @@ final class MotorRevelado {
             let factor = ladoLargoMaximoPixeles / ladoLargo
             return imagen.transformed(by: .init(scaleX: factor, y: factor))
         }
+        return imagen
+    }
+
+    /// Prepara el revelador RAW para EDICIÓN interactiva: se crea una vez por
+    /// foto y se conserva mientras dura la sesión de edición, porque la
+    /// temperatura y el matiz se ajustan en el propio revelado (mejor calidad
+    /// que corregir después, §fase 2) y CIRAWFilter está hecho para eso.
+    func filtroRAWParaEdicion(en url: URL,
+                              ladoLargoMaximoPixeles: CGFloat) throws -> CIRAWFilter {
+        let filtroRAW = try crearFiltroRAW(para: url)
+        let tamanoNativo = filtroRAW.nativeSize
+        let ladoLargo = max(tamanoNativo.width, tamanoNativo.height)
+        filtroRAW.scaleFactor = ladoLargo > 0
+            ? Float(min(1.0, ladoLargoMaximoPixeles / ladoLargo))
+            : 1.0
+        return filtroRAW
+    }
+
+    // =========================================================================
+    // La cadena de ajustes (fase 2): función PURA — misma entrada y mismos
+    // parámetros dan siempre la misma salida. Solo construye la "receta"
+    // (CIImage encadena filtros sin calcular nada); el render real ocurre una
+    // única vez al dibujar (§5.4), en 16 bits y luz lineal (§5.1, §5.2).
+    // =========================================================================
+
+    /// Balance de blancos para fotos NO RAW (las RAW lo hacen en el revelado
+    /// vía neutralTemperature/neutralTint del CIRAWFilter).
+    func aplicarTemperaturaYMatiz(a origen: CIImage,
+                                  temperatura: Double, matiz: Double) -> CIImage {
+        guard temperatura != 0 || matiz != 0 else { return origen }
+        let filtro = CIFilter.temperatureAndTint()
+        filtro.inputImage = origen
+        filtro.neutral = CIVector(x: 6500, y: 0)
+        // +temperatura = más cálido (~±2000 K); +matiz = magenta.
+        filtro.targetNeutral = CIVector(x: 6500 + CGFloat(temperatura) * 20,
+                                        y: CGFloat(matiz) * 0.3)
+        return filtro.outputImage ?? origen
+    }
+
+    /// Aplica la receta completa de tono y color sobre una imagen ya revelada.
+    func aplicarAjustes(a origen: CIImage,
+                        parametros p: ParametrosEdicion) -> CIImage {
+        var imagen = origen
+
+        // Exposición: en luz lineal, sumar EV es multiplicar por 2^EV,
+        // exactamente como abrir el diafragma.
+        if p.exposicion != 0 {
+            let filtro = CIFilter.exposureAdjust()
+            filtro.inputImage = imagen
+            filtro.ev = Float(p.exposicion)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Altas luces y sombras (recuperación).
+        if p.altasLuces < 0 || p.sombras != 0 {
+            let filtro = CIFilter.highlightShadowAdjust()
+            filtro.inputImage = imagen
+            // 1.0 = sin cambio; hacia 0.3 = recuperar altas luces.
+            filtro.highlightAmount = p.altasLuces < 0
+                ? Float(1.0 + p.altasLuces / 100.0 * 0.7)
+                : 1.0
+            // 0 = sin cambio; +1 abre sombras, -1 las cierra.
+            filtro.shadowAmount = Float(p.sombras / 100.0)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Altas luces en positivo (realzar): pequeña subida del tramo alto
+        // de la curva. (Se refinará con kernel propio más adelante.)
+        if p.altasLuces > 0 {
+            let filtro = CIFilter.toneCurve()
+            filtro.inputImage = imagen
+            filtro.point0 = CGPoint(x: 0, y: 0)
+            filtro.point1 = CGPoint(x: 0.25, y: 0.25)
+            filtro.point2 = CGPoint(x: 0.5, y: 0.5)
+            filtro.point3 = CGPoint(x: 0.75, y: 0.75 + p.altasLuces / 100.0 * 0.12)
+            filtro.point4 = CGPoint(x: 1, y: 1)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Blancos (ganancia del punto blanco) y negros (desplazamiento del
+        // punto negro), como mover los extremos de la escala.
+        if p.blancos != 0 || p.negros != 0 {
+            let ganancia = CGFloat(1.0 + p.blancos / 100.0 * 0.25)
+            let sesgo = CGFloat(p.negros / 100.0 * 0.06)
+            let filtro = CIFilter.colorMatrix()
+            filtro.inputImage = imagen
+            filtro.rVector = CIVector(x: ganancia, y: 0, z: 0, w: 0)
+            filtro.gVector = CIVector(x: 0, y: ganancia, z: 0, w: 0)
+            filtro.bVector = CIVector(x: 0, y: 0, z: ganancia, w: 0)
+            filtro.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            filtro.biasVector = CIVector(x: sesgo, y: sesgo, z: sesgo, w: 0)
+            imagen = filtro.outputImage ?? imagen
+
+            // Si se empastan negros (sesgo negativo) evitamos valores por
+            // debajo de cero, que no tienen sentido físico. Por arriba NO se
+            // recorta: las altas luces extendidas se conservan (§5.8).
+            if sesgo < 0 {
+                let clamp = CIFilter.colorClamp()
+                clamp.inputImage = imagen
+                clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+                clamp.maxComponents = CIVector(x: 65504, y: 65504, z: 65504, w: 65504)
+                imagen = clamp.outputImage ?? imagen
+            }
+        }
+
+        // Contraste y saturación global.
+        if p.contraste != 0 || p.saturacion != 0 {
+            let filtro = CIFilter.colorControls()
+            filtro.inputImage = imagen
+            filtro.contrast = Float(1.0 + p.contraste / 100.0 * 0.5)
+            filtro.saturation = Float(1.0 + p.saturacion / 100.0)
+            filtro.brightness = 0
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Intensidad (vibrance): satura protegiendo lo que ya está saturado
+        // y los tonos de piel.
+        if p.intensidad != 0 {
+            let filtro = CIFilter.vibrance()
+            filtro.inputImage = imagen
+            filtro.amount = Float(p.intensidad / 100.0)
+            imagen = filtro.outputImage ?? imagen
+        }
+
         return imagen
     }
 }
