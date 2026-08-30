@@ -26,6 +26,14 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@v4
 
+      # Apple exige compilar con el SDK de iOS 26 (Xcode 26) para poder subir
+      # a App Store Connect. El Mac prestado trae varios Xcode instalados;
+      # elegimos el 26 más reciente.
+      - name: Usar Xcode 26
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          xcodebuild -version
+
       - name: Instalar XcodeGen
         run: brew install xcodegen
 

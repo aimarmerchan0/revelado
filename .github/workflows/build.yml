@@ -27,6 +27,13 @@ jobs:
       - name: Descargar el código
         uses: actions/checkout@v4
 
+      # Mismo Xcode que el workflow de TestFlight, para que lo que aquí sale
+      # en verde sea exactamente lo que luego se firma y se sube.
+      - name: Usar Xcode 26
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)"
+          xcodebuild -version
+
       # Paso 2: instalar XcodeGen, la herramienta que fabrica el proyecto
       # Xcode a partir de nuestro project.yml.
       - name: Instalar XcodeGen
