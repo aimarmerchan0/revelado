@@ -83,6 +83,12 @@ struct ParametrosEdicion: Codable, Equatable {
     var reduccionRuido: Double = 0  // 0...100
     var reduccionRuidoColor: Double = 0
 
+    // --- Sujeto (IA en el dispositivo) ---
+    /// Reiluminado del sujeto detectado (±100 ≈ ±1 EV sobre el sujeto).
+    var realceSujeto: Double = 0
+    /// Reiluminado del fondo (±100 ≈ ±1 EV sobre el fondo).
+    var realceFondo: Double = 0
+
     /// La receta sin tocar.
     static let neutros = ParametrosEdicion()
 
@@ -110,6 +116,7 @@ struct ParametrosEdicion: Codable, Equatable {
         case intensidad, saturacion, hsl
         case textura, claridad, vineta
         case enfoque, reduccionRuido, reduccionRuidoColor
+        case realceSujeto, realceFondo
     }
 
     init(from decoder: Decoder) throws {
@@ -145,5 +152,7 @@ struct ParametrosEdicion: Codable, Equatable {
         enfoque = try c.decodeIfPresent(Double.self, forKey: .enfoque) ?? 0
         reduccionRuido = try c.decodeIfPresent(Double.self, forKey: .reduccionRuido) ?? 0
         reduccionRuidoColor = try c.decodeIfPresent(Double.self, forKey: .reduccionRuidoColor) ?? 0
+        realceSujeto = try c.decodeIfPresent(Double.self, forKey: .realceSujeto) ?? 0
+        realceFondo = try c.decodeIfPresent(Double.self, forKey: .realceFondo) ?? 0
     }
 }

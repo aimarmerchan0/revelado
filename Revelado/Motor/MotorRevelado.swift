@@ -19,6 +19,7 @@
 
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Vision
 
 /// Errores que el motor puede comunicar, con mensaje en claro.
 enum ErrorMotor: Error, LocalizedError {
@@ -176,8 +177,10 @@ final class MotorRevelado {
         if esRAW {
             let filtroRAW = try crearFiltroRAW(para: url)
             filtroRAW.scaleFactor = 1.0 // resolución nativa completa
-            // Mismo balance de blancos que en edición (§5.6).
-            configurarBalanceBlancosRAW(en: filtroRAW, parametros: parametros)
+            // Mismo revelado que en edición (§5.6): balance, exposición,
+            // ruido y enfoque a nivel de sensor.
+            let bases = leerBasesRAW(filtroRAW)
+            configurarReveladoRAW(en: filtroRAW, bases: bases, parametros: parametros)
             guard let imagen = filtroRAW.outputImage else {
                 throw ErrorMotor.decodificacionFallida(url)
             }
@@ -192,7 +195,14 @@ final class MotorRevelado {
         let cubo = parametros.hslEsNeutro
             ? nil
             : ProcesadoColor.generarCuboHSL(parametros.hsl)
-        return aplicarAjustes(a: base, parametros: parametros, cuboHSL: cubo)
+        // La detección de sujeto se repite sobre la imagen a resolución
+        // completa, para que la máscara exportada tenga el detalle máximo.
+        let mascara = (parametros.realceSujeto != 0 || parametros.realceFondo != 0)
+            ? mascaraSujeto(de: base)
+            : nil
+        return aplicarAjustes(a: base, parametros: parametros,
+                              cuboHSL: cubo, mascaraSujeto: mascara,
+                              decodificadoRAW: esRAW)
     }
 
     /// TIFF de 16 bits por canal con perfil Display P3 incrustado (§5.7):
@@ -253,6 +263,55 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
         return imagen
+    }
+
+    /// Los valores con los que el revelador abrió el RAW por primera vez:
+    /// el punto de partida de todos los ajustes de nivel de revelado.
+    struct BasesRAW {
+        var temperatura: Float
+        var tinte: Float
+        var exposicion: Float
+        var ruidoLuminancia: Float
+        var ruidoColor: Float
+        var nitidez: Float
+    }
+
+    /// Lee las bases de un filtro recién creado, ANTES de tocar nada.
+    func leerBasesRAW(_ filtroRAW: CIRAWFilter) -> BasesRAW {
+        BasesRAW(temperatura: filtroRAW.neutralTemperature,
+                 tinte: filtroRAW.neutralTint,
+                 exposicion: filtroRAW.exposure,
+                 ruidoLuminancia: filtroRAW.luminanceNoiseReductionAmount,
+                 ruidoColor: filtroRAW.colorNoiseReductionAmount,
+                 nitidez: filtroRAW.sharpnessAmount)
+    }
+
+    /// Configura el revelado RAW completo según la receta, partiendo siempre
+    /// de las bases: balance de blancos, exposición, reducción de ruido y
+    /// enfoque se ejecutan DENTRO del revelador, sobre los datos del sensor,
+    /// que es donde mejor calidad dan. Mismo código para previsualización y
+    /// exportación (§5.6): se llama con el mismo par (filtro, receta).
+    func configurarReveladoRAW(en filtroRAW: CIRAWFilter,
+                               bases: BasesRAW,
+                               parametros p: ParametrosEdicion) {
+        // Volver al punto de partida (el filtro persiste entre pasadas).
+        filtroRAW.neutralTemperature = bases.temperatura
+        filtroRAW.neutralTint = bases.tinte
+        configurarBalanceBlancosRAW(en: filtroRAW, parametros: p)
+
+        // Exposición a nivel de revelado: pasos EV reales sobre el sensor.
+        filtroRAW.exposure = bases.exposicion + Float(p.exposicion)
+
+        // Reducción de ruido del propio revelador (trabaja antes del
+        // demosaicado final: mucho más limpia que un filtro posterior).
+        filtroRAW.luminanceNoiseReductionAmount =
+            min(1, max(0, bases.ruidoLuminancia + Float(p.reduccionRuido / 100)))
+        filtroRAW.colorNoiseReductionAmount =
+            min(1, max(0, bases.ruidoColor + Float(p.reduccionRuidoColor / 100)))
+
+        // Enfoque del revelador, sobre el detalle real del sensor.
+        filtroRAW.sharpnessAmount =
+            min(1, max(0, bases.nitidez + Float(p.enfoque / 100)))
     }
 
     /// Configura el balance de blancos de un CIRAWFilter según la receta.
@@ -341,14 +400,20 @@ final class MotorRevelado {
     /// Aplica la receta completa de tono y color sobre una imagen ya revelada.
     /// `cuboHSL` es la tabla del mezclador generada por ProcesadoColor (se
     /// pasa ya hecha para no recalcularla en cada fotograma).
+    /// `mascaraSujeto` es la máscara de la detección de sujeto, si existe.
+    /// `decodificadoRAW` = true cuando la imagen viene del revelador RAW,
+    /// donde exposición, ruido y enfoque YA se aplicaron a nivel de sensor.
     func aplicarAjustes(a origen: CIImage,
                         parametros p: ParametrosEdicion,
-                        cuboHSL: Data? = nil) -> CIImage {
+                        cuboHSL: Data? = nil,
+                        mascaraSujeto: CIImage? = nil,
+                        decodificadoRAW: Bool = false) -> CIImage {
         var imagen = aplicarGeometria(a: origen, parametros: p)
 
         // Exposición: en luz lineal, sumar EV es multiplicar por 2^EV,
-        // exactamente como abrir el diafragma.
-        if p.exposicion != 0 {
+        // exactamente como abrir el diafragma. (En RAW ya viene aplicada
+        // dentro del revelado, con calidad de sensor.)
+        if p.exposicion != 0 && !decodificadoRAW {
             let filtro = CIFilter.exposureAdjust()
             filtro.inputImage = imagen
             filtro.ev = Float(p.exposicion)
@@ -407,13 +472,25 @@ final class MotorRevelado {
             }
         }
 
-        // Contraste y saturación global.
-        if p.contraste != 0 || p.saturacion != 0 {
+        // Contraste: curva S de verdad, con pivote en el gris medio y
+        // hombros suaves — el contraste "fotográfico", no el genérico.
+        if p.contraste != 0 {
+            let filtro = CIFilter.colorCurves()
+            filtro.inputImage = imagen
+            filtro.curvesData = ProcesadoColor.datosCurvaUnica(
+                ProcesadoColor.curvaContraste(p.contraste))
+            filtro.curvesDomain = CIVector(x: 0, y: 1)
+            filtro.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Saturación global.
+        if p.saturacion != 0 {
             let filtro = CIFilter.colorControls()
             filtro.inputImage = imagen
-            filtro.contrast = Float(1.0 + p.contraste / 100.0 * 0.5)
             filtro.saturation = Float(1.0 + p.saturacion / 100.0)
             filtro.brightness = 0
+            filtro.contrast = 1
             imagen = filtro.outputImage ?? imagen
         }
 
@@ -467,8 +544,32 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
+        // Reiluminado de sujeto/fondo con la máscara de la detección IA:
+        // el sujeto y el fondo se exponen por separado y la máscara los une.
+        if let mascaraSujeto, p.realceSujeto != 0 || p.realceFondo != 0 {
+            let mascara = aplicarGeometria(a: mascaraSujeto, parametros: p)
+
+            func reexponer(_ base: CIImage, ev: Double) -> CIImage {
+                guard ev != 0 else { return base }
+                let filtro = CIFilter.exposureAdjust()
+                filtro.inputImage = base
+                filtro.ev = Float(ev)
+                return filtro.outputImage ?? base
+            }
+
+            let sujeto = reexponer(imagen, ev: p.realceSujeto / 100.0)
+            let fondo = reexponer(imagen, ev: p.realceFondo / 100.0)
+
+            let filtro = CIFilter.blendWithMask()
+            filtro.inputImage = sujeto
+            filtro.backgroundImage = fondo
+            filtro.maskImage = mascara
+            imagen = filtro.outputImage ?? imagen
+        }
+
         // Reducción de ruido, antes del enfoque para no afilar el ruido.
-        if p.reduccionRuido > 0 || p.reduccionRuidoColor > 0 {
+        // (En RAW ya se hizo dentro del revelado, sobre los datos del sensor.)
+        if (p.reduccionRuido > 0 || p.reduccionRuidoColor > 0) && !decodificadoRAW {
             let filtro = CIFilter.noiseReduction()
             filtro.inputImage = imagen
             filtro.noiseLevel = Float(p.reduccionRuido / 100.0 * 0.1)
@@ -477,7 +578,8 @@ final class MotorRevelado {
         }
 
         // Enfoque de luminancia (no toca el color, solo el detalle).
-        if p.enfoque > 0 {
+        // (En RAW ya se hizo dentro del revelado.)
+        if p.enfoque > 0 && !decodificadoRAW {
             let filtro = CIFilter.sharpenLuminance()
             filtro.inputImage = imagen
             filtro.sharpness = Float(p.enfoque / 100.0 * 1.2)
@@ -494,6 +596,50 @@ final class MotorRevelado {
         }
 
         return imagen
+    }
+
+    // =========================================================================
+    // Detección de sujeto (IA en el dispositivo, Vision de iOS 17).
+    // Devuelve la máscara del sujeto principal (blanco = sujeto) del mismo
+    // tamaño que la imagen, o nil si no se detecta ninguno. Todo ocurre en
+    // el motor neuronal del iPhone: nada sale del dispositivo.
+    // =========================================================================
+    func mascaraSujeto(de imagen: CIImage) -> CIImage? {
+        let peticion = VNGenerateForegroundInstanceMaskRequest()
+        let manejador = VNImageRequestHandler(ciImage: imagen, options: [:])
+        do {
+            try manejador.perform([peticion])
+        } catch {
+            return nil
+        }
+        guard let resultado = peticion.results?.first,
+              !resultado.allInstances.isEmpty,
+              let bufer = try? resultado.generateScaledMaskForImage(
+                forInstances: resultado.allInstances, from: manejador)
+        else { return nil }
+        return CIImage(cvPixelBuffer: bufer)
+    }
+
+    /// Percentiles de luminosidad (sombras, medios, luces) para el Auto:
+    /// el fotómetro matricial de la app.
+    func estadisticasTonales(de imagen: CIImage) -> (p05: Double, p50: Double, p95: Double)? {
+        guard let h = calcularHistograma(de: imagen) else { return nil }
+        let bins = h.r.count
+        let luma = (0..<bins).map { Double(h.r[$0] + h.v[$0] + h.a[$0]) / 3 }
+        let total = luma.reduce(0, +)
+        guard total > 0 else { return nil }
+
+        func percentil(_ objetivo: Double) -> Double {
+            var acumulado = 0.0
+            for (i, valor) in luma.enumerated() {
+                acumulado += valor
+                if acumulado / total >= objetivo {
+                    return Double(i) / Double(bins - 1)
+                }
+            }
+            return 1
+        }
+        return (percentil(0.05), percentil(0.5), percentil(0.95))
     }
 
     /// Luminosidad media de la imagen (0...1, en valores de pantalla), para

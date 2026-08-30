@@ -94,6 +94,30 @@ enum ProcesadoColor {
         return datos.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
+    /// Muestrea una única curva y la replica en los tres canales, en el
+    /// formato de CIColorCurves. Se usa para la curva S del contraste.
+    static func datosCurvaUnica(_ puntos: [PuntoCurva]) -> Data {
+        let n = 256
+        let tabla = muestrearCurva(puntos, muestras: n)
+        var datos = [Float](repeating: 0, count: n * 3)
+        for x in 0..<n {
+            datos[x * 3 + 0] = tabla[x]
+            datos[x * 3 + 1] = tabla[x]
+            datos[x * 3 + 2] = tabla[x]
+        }
+        return datos.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
+    /// La curva S del contraste: pivote en el gris medio, hombros suaves.
+    static func curvaContraste(_ contraste: Double) -> [PuntoCurva] {
+        let c = contraste / 100.0 * 0.10
+        return [PuntoCurva(x: 0, y: 0),
+                PuntoCurva(x: 0.25, y: 0.25 - c),
+                PuntoCurva(x: 0.5, y: 0.5),
+                PuntoCurva(x: 0.75, y: 0.75 + c),
+                PuntoCurva(x: 1, y: 1)]
+    }
+
     // =========================================================================
     // Mezclador HSL → cubo de color
     // =========================================================================

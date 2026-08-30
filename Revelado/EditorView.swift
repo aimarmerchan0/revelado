@@ -22,9 +22,13 @@ struct EditorView: View {
     // --- Estado de la sesión de edición ---
     @State private var parametros = ParametrosEdicion.neutros
     @State private var filtroRAW: CIRAWFilter? = nil
-    @State private var temperaturaBase: Float = 6500
-    @State private var tinteBase: Float = 0
+    /// Los valores con los que el revelador abrió el RAW (el punto cero).
+    @State private var basesRAW: MotorRevelado.BasesRAW? = nil
     @State private var imagenBase: CIImage? = nil
+    /// Máscara del sujeto detectado por la IA del dispositivo (se calcula
+    /// una vez por foto, en segundo plano).
+    @State private var mascaraSujeto: CIImage? = nil
+    @State private var buscandoSujeto = false
     @State private var imagen: CIImage? = nil
     @State private var mensajeError: String? = nil
     @State private var cargada = false
@@ -56,6 +60,7 @@ struct EditorView: View {
     enum Panel: String, CaseIterable, Identifiable {
         case luz = "Luz"
         case color = "Color"
+        case sujeto = "Sujeto"
         case efectos = "Efectos"
         case detalle = "Detalle"
         case recortar = "Recortar"
@@ -64,6 +69,7 @@ struct EditorView: View {
             switch self {
             case .luz: return "sun.max"
             case .color: return "paintpalette"
+            case .sujeto: return "sparkles"
             case .efectos: return "wand.and.stars"
             case .detalle: return "triangle"
             case .recortar: return "crop.rotate"
@@ -249,6 +255,7 @@ struct EditorView: View {
                     switch panel {
                     case .luz: panelLuz
                     case .color: panelColor
+                    case .sujeto: panelSujeto
                     case .efectos: panelEfectos
                     case .detalle: panelDetalle
                     case .recortar: panelRecortar
@@ -359,6 +366,34 @@ struct EditorView: View {
         return Color(red: r, green: g, blue: b)
     }
 
+    // ---- Sujeto (IA en el dispositivo) ----
+    @ViewBuilder private var panelSujeto: some View {
+        if buscandoSujeto {
+            HStack(spacing: 8) {
+                ProgressView()
+                Text("Buscando el sujeto…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 12)
+        } else if mascaraSujeto == nil {
+            ContentUnavailableView("Sin sujeto detectado",
+                                   systemImage: "person.crop.rectangle.badge.plus",
+                                   description: Text("La detección funciona mejor con personas, animales u objetos destacados sobre el fondo."))
+                .frame(height: 180)
+        } else {
+            Text("Sujeto detectado. La luz del sujeto y la del fondo se ajustan por separado; la detección ocurre solo en tu iPhone.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 10)
+
+            FilaAjuste("Luz del sujeto", valor: $parametros.realceSujeto)
+            FilaAjuste("Luz del fondo", valor: $parametros.realceFondo)
+        }
+    }
+
     // ---- Efectos ----
     @ViewBuilder private var panelEfectos: some View {
         FilaAjuste("Textura", valor: $parametros.textura)
@@ -461,8 +496,8 @@ struct EditorView: View {
     }
 
     private func aplicar(_ preajuste: PreajusteBB) {
-        let baseKelvin = foto.esRAW ? Double(temperaturaBase) : 6500
-        let baseMatiz = foto.esRAW ? Double(tinteBase) : 0
+        let baseKelvin = foto.esRAW ? Double(basesRAW?.temperatura ?? 6500) : 6500
+        let baseMatiz = foto.esRAW ? Double(basesRAW?.tinte ?? 0) : 0
         withAnimation(.snappy) {
             parametros.puntoNeutroX = nil
             parametros.puntoNeutroY = nil
@@ -507,22 +542,27 @@ struct EditorView: View {
         }
     }
 
-    /// Auto: el fotómetro de la app. Mide la luminosidad media del original
-    /// y coloca la exposición para llevarla a un gris medio, con un punto
-    /// de contraste de regalo.
+    /// Auto: el fotómetro matricial de la app. Lee sombras, medios y luces
+    /// (percentiles 5, 50 y 95) del original y coloca exposición, negros,
+    /// blancos y contraste como punto de partida razonable.
     private func aplicarAuto() {
         guard let original = imagenOriginal else { return }
         Task {
-            let media = await Task.detached(priority: .userInitiated) {
-                MotorRevelado.compartido.luminanciaMedia(de: original)
+            let estadisticas = await Task.detached(priority: .userInitiated) {
+                MotorRevelado.compartido.estadisticasTonales(de: original)
             }.value
-            guard let media, media > 0 else { return }
+            guard let estadisticas else { return }
             await MainActor.run {
                 withAnimation(.snappy) {
-                    // 0.45 en valores de pantalla ≈ gris medio fotográfico.
-                    parametros.exposicion = min(2.5, max(-2.5, log2(0.45 / media)))
+                    // Medios al gris medio fotográfico.
+                    let medios = max(0.02, estadisticas.p50)
+                    parametros.exposicion = min(2.5, max(-2.5, log2(0.42 / medios)))
                         .redondeadoAPaso(0.05)
-                    if parametros.contraste == 0 { parametros.contraste = 10 }
+                    // Sombras levantadas → bajar negros; luces cortas → abrir blancos.
+                    parametros.negros = -min(30, estadisticas.p05 * 300).rounded()
+                    parametros.blancos = min(30, (1 - estadisticas.p95) * 250).rounded()
+                    if parametros.contraste == 0 { parametros.contraste = 12 }
+                    if parametros.sombras == 0 { parametros.sombras = 10 }
                 }
             }
         }
@@ -547,8 +587,7 @@ struct EditorView: View {
                     try MotorRevelado.compartido.filtroRAWParaEdicion(
                         en: url, ladoLargoMaximoPixeles: lado)
                 }.value
-                temperaturaBase = filtro.neutralTemperature
-                tinteBase = filtro.neutralTint
+                basesRAW = MotorRevelado.compartido.leerBasesRAW(filtro)
                 imagenOriginal = filtro.outputImage
                 filtroRAW = filtro
             } else {
@@ -562,6 +601,7 @@ struct EditorView: View {
 
             cargada = true
             recalcular()
+            buscarSujeto()
         } catch {
             mensajeError = error.localizedDescription
         }
@@ -571,10 +611,11 @@ struct EditorView: View {
         let motor = MotorRevelado.compartido
         var base: CIImage?
 
-        if let filtroRAW {
-            filtroRAW.neutralTemperature = temperaturaBase
-            filtroRAW.neutralTint = tinteBase
-            motor.configurarBalanceBlancosRAW(en: filtroRAW, parametros: parametros)
+        if let filtroRAW, let basesRAW {
+            // Revelado completo a nivel de sensor: balance, exposición,
+            // ruido y enfoque, siempre partiendo de las bases (§5.6).
+            motor.configurarReveladoRAW(en: filtroRAW, bases: basesRAW,
+                                        parametros: parametros)
             base = filtroRAW.outputImage
         } else if let imagenBase {
             base = motor.aplicarBalanceBlancosNoRAW(a: imagenBase, parametros: parametros)
@@ -591,8 +632,31 @@ struct EditorView: View {
             hslDelCubo = parametros.hsl
         }
 
-        imagen = motor.aplicarAjustes(a: base, parametros: parametros, cuboHSL: cuboHSL)
+        imagen = motor.aplicarAjustes(a: base, parametros: parametros,
+                                      cuboHSL: cuboHSL,
+                                      mascaraSujeto: mascaraSujeto,
+                                      decodificadoRAW: foto.esRAW)
         actualizarHistograma()
+    }
+
+    /// Lanza la detección de sujeto en segundo plano (una vez por foto).
+    private func buscarSujeto() {
+        guard mascaraSujeto == nil, !buscandoSujeto,
+              let original = imagenOriginal else { return }
+        buscandoSujeto = true
+        Task {
+            let mascara = await Task.detached(priority: .utility) {
+                MotorRevelado.compartido.mascaraSujeto(de: original)
+            }.value
+            await MainActor.run {
+                mascaraSujeto = mascara
+                buscandoSujeto = false
+                // Si la receta guardada ya usaba el reiluminado, aplicarlo.
+                if parametros.realceSujeto != 0 || parametros.realceFondo != 0 {
+                    recalcular()
+                }
+            }
+        }
     }
 
     /// Recalcula el histograma con un pequeño respiro (150 ms) para no
