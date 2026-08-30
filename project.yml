@@ -41,6 +41,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.aimar.revelado
         # El icono de la app sale del catálogo de recursos (Assets.xcassets).
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # La app no usa cifrado propio: responde de antemano la pregunta de
+        # exportación de Apple para que cada compilación quede disponible en
+        # TestFlight sin trámite manual.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         # Xcode genera el Info.plist automáticamente con las claves de abajo,
         # así no hay que mantener un archivo XML aparte.
         GENERATE_INFOPLIST_FILE: YES
