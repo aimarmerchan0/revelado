@@ -56,18 +56,21 @@ struct ContentView: View {
                 .padding(.vertical, 8)
 
                 if fotosFiltradas.isEmpty {
-                    Spacer()
-                    VStack(spacing: 12) {
-                        Image(systemName: "camera.aperture")
-                            .font(.system(size: 48))
-                            .foregroundStyle(.secondary)
-                        Text(fotos.isEmpty
-                             ? "Biblioteca vacía.\nImporta fotos con los botones de arriba."
-                             : "No hay fotos de este formato.")
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.secondary)
+                    // El estado vacío estándar de iOS 17.
+                    if fotos.isEmpty {
+                        ContentUnavailableView {
+                            Label("Sin fotos", systemImage: "camera.aperture")
+                        } description: {
+                            Text("Importa tus RAW y fotos con el botón +.")
+                        } actions: {
+                            Button("Importar de Archivos") { mostrarArchivos = true }
+                                .buttonStyle(.borderedProminent)
+                        }
+                    } else {
+                        ContentUnavailableView("Nada con este formato",
+                                               systemImage: "line.3.horizontal.decrease.circle",
+                                               description: Text("Prueba con otro filtro."))
                     }
-                    Spacer()
                 } else {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 110),
@@ -91,15 +94,20 @@ struct ContentView: View {
                     if importando {
                         ProgressView()
                     }
-                    Button {
-                        mostrarCarrete = true
+                    // El patrón estándar de Apple: un único botón + con menú.
+                    Menu {
+                        Button {
+                            mostrarCarrete = true
+                        } label: {
+                            Label("Del carrete", systemImage: "photo.on.rectangle")
+                        }
+                        Button {
+                            mostrarArchivos = true
+                        } label: {
+                            Label("De Archivos", systemImage: "folder")
+                        }
                     } label: {
-                        Label("Carrete", systemImage: "photo.on.rectangle")
-                    }
-                    Button {
-                        mostrarArchivos = true
-                    } label: {
-                        Label("Archivos", systemImage: "folder")
+                        Label("Importar", systemImage: "plus")
                     }
                 }
             }

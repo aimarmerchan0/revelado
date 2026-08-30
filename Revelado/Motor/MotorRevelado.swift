@@ -164,6 +164,57 @@ final class MotorRevelado {
     }
 
     // =========================================================================
+    // Exportación (§5.6, §5.7): MISMO código que la previsualización, con
+    // factor de escala 1.0 — resolución nativa completa. Si fueran dos rutas
+    // distintas, tarde o temprano lo exportado no sería lo que se veía.
+    // =========================================================================
+
+    /// Revela el original a resolución completa y le aplica la receta.
+    func renderizarParaExportar(en url: URL, esRAW: Bool,
+                                parametros: ParametrosEdicion) throws -> CIImage {
+        let base: CIImage
+        if esRAW {
+            let filtroRAW = try crearFiltroRAW(para: url)
+            filtroRAW.scaleFactor = 1.0 // resolución nativa completa
+            // Mismo balance de blancos que en edición: el de cámara + el ajuste.
+            filtroRAW.neutralTemperature += Float(parametros.temperatura) * 20
+            filtroRAW.neutralTint += Float(parametros.matiz) * 0.3
+            guard let imagen = filtroRAW.outputImage else {
+                throw ErrorMotor.decodificacionFallida(url)
+            }
+            base = imagen
+        } else {
+            guard let imagen = CIImage(contentsOf: url,
+                                       options: [.applyOrientationProperty: true]) else {
+                throw ErrorMotor.decodificacionFallida(url)
+            }
+            base = aplicarTemperaturaYMatiz(a: imagen,
+                                            temperatura: parametros.temperatura,
+                                            matiz: parametros.matiz)
+        }
+        return aplicarAjustes(a: base, parametros: parametros)
+    }
+
+    /// TIFF de 16 bits por canal con perfil Display P3 incrustado (§5.7):
+    /// el archivo maestro. Sin perfil incrustado sería un archivo roto.
+    func exportarTIFF16(imagen: CIImage, a destino: URL) throws {
+        try contexto.writeTIFFRepresentation(of: imagen,
+                                             to: destino,
+                                             format: .RGBA16,
+                                             colorSpace: espacioSalidaPantalla,
+                                             options: [:])
+    }
+
+    /// HEIF de 10 bits con perfil incrustado (§5.7): calidad alta y peso
+    /// razonable, ideal para guardar en Fotos.
+    func exportarHEIF10(imagen: CIImage, a destino: URL) throws {
+        try contexto.writeHEIF10Representation(of: imagen,
+                                               to: destino,
+                                               colorSpace: espacioSalidaPantalla,
+                                               options: [:])
+    }
+
+    // =========================================================================
     // La cadena de ajustes (fase 2): función PURA — misma entrada y mismos
     // parámetros dan siempre la misma salida. Solo construye la "receta"
     // (CIImage encadena filtros sin calcular nada); el render real ocurre una

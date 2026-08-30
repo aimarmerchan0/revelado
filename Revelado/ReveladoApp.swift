@@ -15,6 +15,8 @@ struct ReveladoApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                // Color de acento de toda la app: el ámbar del icono.
+                .tint(Color(red: 0.91, green: 0.64, blue: 0.24))
         }
         // Abre (o crea) la base de datos local de la biblioteca y la pone a
         // disposición de todas las pantallas.

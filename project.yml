@@ -45,6 +45,9 @@ targets:
         # exportación de Apple para que cada compilación quede disponible en
         # TestFlight sin trámite manual.
         INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
+        # Texto que iOS muestra al pedir permiso para GUARDAR en Fotos
+        # (la exportación a HEIF). Solo permiso de añadir, nunca de leer.
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: Para guardar tus fotos reveladas en el carrete.
         # Xcode genera el Info.plist automáticamente con las claves de abajo,
         # así no hay que mantener un archivo XML aparte.
         GENERATE_INFOPLIST_FILE: YES
