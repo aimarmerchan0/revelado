@@ -69,6 +69,19 @@ final class MotorRevelado {
         ])
     }
 
+    /// Prepara el revelador de Apple para un archivo RAW concreto.
+    /// CIRAWFilter entiende el RAW de cada cámara de su lista de
+    /// compatibilidad (la R6 Mark II está en ella; el ProRAW es nativo).
+    private func crearFiltroRAW(para url: URL) throws -> CIRAWFilter {
+        guard let filtroRAW = CIRAWFilter(imageURL: url) else {
+            throw ErrorMotor.formatoNoSoportado(url)
+        }
+        // §5.8 — NO recortar los colores fuera de gamut al decodificar.
+        // Si hiciera falta mapear gamut, se hará al final de la cadena.
+        filtroRAW.isGamutMappingEnabled = false
+        return filtroRAW
+    }
+
     /// Abre un archivo RAW y lo revela con los ajustes neutros de Apple,
     /// sin ningún ajuste nuestro todavía (eso llega en la fase 2).
     ///
@@ -80,18 +93,30 @@ final class MotorRevelado {
     /// - Devuelve: la imagen revelada como CIImage (todavía sin renderizar:
     ///   es la "receta" de la imagen, lista para encadenar ajustes encima).
     func decodificarRAW(en url: URL, factorEscala: Float = 1.0) throws -> CIImage {
-        // CIRAWFilter es el revelador de Apple: entiende el RAW de cada
-        // cámara de su lista de compatibilidad (la R6 Mark II está en ella).
-        guard let filtroRAW = CIRAWFilter(imageURL: url) else {
-            throw ErrorMotor.formatoNoSoportado(url)
-        }
-
-        // §5.8 — NO recortar los colores fuera de gamut al decodificar.
-        // Si hiciera falta mapear gamut, se hará al final de la cadena.
-        filtroRAW.isGamutMappingEnabled = false
+        let filtroRAW = try crearFiltroRAW(para: url)
 
         // §5.6 — misma decodificación para preview y export; solo varía escala.
         filtroRAW.scaleFactor = factorEscala
+
+        guard let imagen = filtroRAW.outputImage else {
+            throw ErrorMotor.decodificacionFallida(url)
+        }
+        return imagen
+    }
+
+    /// Igual que decodificarRAW, pero calcula solo el factor de escala para
+    /// que el lado largo de la imagen no pase de un máximo en píxeles (§5.6:
+    /// previsualización reducida al tamaño real de pantalla, nunca ampliada
+    /// por encima del 100%).
+    func decodificarRAWParaPantalla(en url: URL,
+                                    ladoLargoMaximoPixeles: CGFloat) throws -> CIImage {
+        let filtroRAW = try crearFiltroRAW(para: url)
+
+        let tamanoNativo = filtroRAW.nativeSize
+        let ladoLargo = max(tamanoNativo.width, tamanoNativo.height)
+        filtroRAW.scaleFactor = ladoLargo > 0
+            ? Float(min(1.0, ladoLargoMaximoPixeles / ladoLargo))
+            : 1.0
 
         guard let imagen = filtroRAW.outputImage else {
             throw ErrorMotor.decodificacionFallida(url)
