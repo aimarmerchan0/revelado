@@ -1,31 +1,43 @@
 // =============================================================================
-// ContentView.swift — la vista principal (por ahora, un marcador de posición)
+// ContentView.swift — la vista principal
 //
-// En SwiftUI la interfaz se describe declarando lo que se quiere ver, no
-// dibujándolo paso a paso. Es como una hoja de contactos: describes qué fotos
-// van y en qué orden, y el sistema se encarga de colocarlas.
-//
-// Esta pantalla es solo el "carrete de prueba" de la fase 1, punto 1: sirve
-// únicamente para confirmar que el proyecto compila y arranca. En el punto 3
-// la sustituiremos por el visor real basado en MTKView.
+// Ahora aloja el visor Metal a pantalla completa. Mientras no haya ninguna
+// foto abierta (el selector de archivos llega en el punto 4), el visor está
+// en negro y encima se muestra un aviso de "sin foto".
 // =============================================================================
 
 import SwiftUI
+import CoreImage
 
 struct ContentView: View {
+
+    /// La imagen revelada actualmente en pantalla. nil = ninguna foto abierta.
+    /// @State le dice a SwiftUI: cuando esto cambie, redibuja la interfaz.
+    @State private var imagenRevelada: CIImage? = nil
+
     var body: some View {
-        // VStack apila los elementos en vertical, uno debajo de otro.
-        VStack(spacing: 12) {
-            Image(systemName: "camera.aperture")
-                .font(.system(size: 56))
-                .foregroundStyle(.secondary)
-            Text("Revelado")
-                .font(.largeTitle.bold())
-            Text("Proyecto en marcha. Fase 1, punto 1: cimientos.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        ZStack {
+            // El visor Metal ocupa todo, con fondo negro de sala de edición.
+            VisorMetal(imagen: imagenRevelada)
+                .ignoresSafeArea()
+                .background(Color.black)
+
+            // Aviso mientras no haya foto abierta.
+            if imagenRevelada == nil {
+                VStack(spacing: 12) {
+                    Image(systemName: "camera.aperture")
+                        .font(.system(size: 56))
+                        .foregroundStyle(.secondary)
+                    Text("Revelado")
+                        .font(.largeTitle.bold())
+                        .foregroundStyle(.white)
+                    Text("Sin foto. El selector de archivos llega en el punto 4.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .padding()
+        .preferredColorScheme(.dark) // sala de edición: interfaz siempre oscura
     }
 }
 
