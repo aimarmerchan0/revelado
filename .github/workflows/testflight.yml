@@ -1,0 +1,99 @@
+# =============================================================================
+# testflight.yml — compilar firmado y subir a TestFlight
+#
+# Este workflow NO se ejecuta con cada subida de código: se lanza a mano desde
+# la pestaña Actions de GitHub (botón "Run workflow") cuando queremos mandar
+# una versión nueva al iPhone. Necesita los secretos configurados en el
+# repositorio (certificado de firma, perfil y clave de App Store Connect).
+#
+# El paralelismo fotográfico: el workflow "Compilar" es la copia de contacto
+# (rápida, para ver que todo está bien); este es la copia final firmada que
+# sale del laboratorio hacia el cliente (tu iPhone).
+# =============================================================================
+
+name: TestFlight
+
+on:
+  # Solo lanzamiento manual desde la pestaña Actions.
+  workflow_dispatch:
+
+jobs:
+  subir:
+    name: Archivar, firmar y subir a TestFlight
+    runs-on: macos-15
+
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      # Montar un llavero temporal en el Mac prestado e importar en él el
+      # certificado de distribución y el perfil de aprovisionamiento.
+      # El llavero se destruye con el Mac al terminar: nada queda atrás.
+      - name: Preparar la firma (llavero temporal)
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERT_PATH="$RUNNER_TEMP/certificado.p12"
+          PROFILE_PATH="$RUNNER_TEMP/perfil.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/firma.keychain-db"
+
+          # Reconstruir los archivos binarios desde los secretos en base64.
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+          echo -n "$BUILD_PROVISION_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+
+          # Crear y desbloquear el llavero temporal.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Importar el certificado y autorizar a las herramientas de Apple.
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+
+          # Instalar el perfil donde xcodebuild lo busca, nombrado por su UUID.
+          mkdir -p ~/Library/MobileDevice/"Provisioning Profiles"
+          UUID=$(security cms -D -i "$PROFILE_PATH" | plutil -extract UUID raw -)
+          cp "$PROFILE_PATH" ~/Library/MobileDevice/"Provisioning Profiles"/"$UUID".mobileprovision
+
+      - name: Generar el proyecto Xcode
+        run: xcodegen generate
+
+      # Compilar la app firmada para iPhone real. El número de compilación es
+      # el número de ejecución del workflow: sube solo en cada envío.
+      - name: Archivar
+        run: >
+          xcodebuild archive
+          -project Revelado.xcodeproj
+          -scheme Revelado
+          -destination 'generic/platform=iOS'
+          -archivePath "$RUNNER_TEMP/Revelado.xcarchive"
+          CODE_SIGN_STYLE=Manual
+          CODE_SIGN_IDENTITY="Apple Distribution"
+          PROVISIONING_PROFILE_SPECIFIER="Revelado AppStore"
+          DEVELOPMENT_TEAM=R78V56XX89
+          CURRENT_PROJECT_VERSION=${{ github.run_number }}
+
+      # Exportar el archivo firmado y subirlo a App Store Connect en el mismo
+      # paso (ExportOptions.plist lleva destination=upload). La autenticación
+      # va con la clave .p8 de App Store Connect.
+      - name: Exportar y subir a TestFlight
+        env:
+          APP_STORE_CONNECT_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_BASE64 }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/clave-asc.p8"
+          echo -n "$APP_STORE_CONNECT_KEY_BASE64" | base64 --decode -o "$KEY_PATH"
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Revelado.xcarchive" \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/exportado" \
+            -authenticationKeyPath "$KEY_PATH" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}"

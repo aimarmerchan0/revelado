@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Opciones de exportación para el workflow de TestFlight:
+     método App Store Connect, subida directa, firma manual con el perfil
+     "Revelado AppStore". El número de versión lo controla el workflow. -->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>signingStyle</key>
+	<string>manual</string>
+	<key>teamID</key>
+	<string>R78V56XX89</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>com.aimar.revelado</key>
+		<string>Revelado AppStore</string>
+	</dict>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>
