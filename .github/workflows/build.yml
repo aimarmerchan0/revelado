@@ -1,0 +1,48 @@
+# =============================================================================
+# build.yml — compilación automática en los Mac de GitHub
+#
+# Cada vez que se sube código al repositorio, GitHub enciende un Mac prestado,
+# genera el proyecto con XcodeGen y compila la app para el simulador de iPhone.
+# Es nuestro control de calidad: si esta compilación sale en verde, el código
+# es válido. (La subida a TestFlight para instalarla en tu iPhone es un
+# workflow aparte que montaremos cuando la fase 1 tenga algo que instalar.)
+# =============================================================================
+
+name: Compilar
+
+on:
+  # Se ejecuta con cada subida de código a la rama principal...
+  push:
+    branches: [main]
+  # ...y también se puede lanzar a mano desde la pestaña Actions de GitHub.
+  workflow_dispatch:
+
+jobs:
+  compilar:
+    name: Compilar app (simulador)
+    runs-on: macos-15
+
+    steps:
+      # Paso 1: el Mac prestado descarga el código del repositorio.
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      # Paso 2: instalar XcodeGen, la herramienta que fabrica el proyecto
+      # Xcode a partir de nuestro project.yml.
+      - name: Instalar XcodeGen
+        run: brew install xcodegen
+
+      # Paso 3: generar Revelado.xcodeproj a partir de la receta.
+      - name: Generar el proyecto Xcode
+        run: xcodegen generate
+
+      # Paso 4: compilar para el simulador de iPhone.
+      # CODE_SIGNING_ALLOWED=NO desactiva la firma digital: para el simulador
+      # no hace falta certificado, y así este workflow no necesita secretos.
+      - name: Compilar para el simulador de iPhone
+        run: >
+          xcodebuild build
+          -project Revelado.xcodeproj
+          -scheme Revelado
+          -destination 'generic/platform=iOS Simulator'
+          CODE_SIGNING_ALLOWED=NO

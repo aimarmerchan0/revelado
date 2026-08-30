@@ -1,0 +1,57 @@
+# =============================================================================
+# project.yml — la "receta" del proyecto Xcode
+#
+# Este archivo describe el proyecto completo. En el Mac (en la nube o en CI)
+# se ejecuta `xcodegen generate` y a partir de esta receta se crea el
+# Revelado.xcodeproj que Xcode necesita para compilar.
+#
+# El .xcodeproj NUNCA se edita a mano ni se sube al repositorio: si hay que
+# añadir un archivo o cambiar un ajuste, se toca este YAML y se regenera.
+# =============================================================================
+
+name: Revelado
+
+options:
+  # Versión mínima de iOS que la app acepta. iOS 17 según lo decidido.
+  deploymentTarget:
+    iOS: "17.0"
+  # Crea los grupos de carpetas en Xcode espejando las carpetas reales del disco.
+  createIntermediateGroups: true
+
+settings:
+  base:
+    # El equipo de desarrollo de Apple (tu cuenta de Apple Developer).
+    DEVELOPMENT_TEAM: R78V56XX89
+    SWIFT_VERSION: "5.9"
+
+targets:
+  Revelado:
+    type: application
+    platform: iOS
+    # Todo el código fuente vive dentro de la carpeta Revelado/.
+    sources:
+      - Revelado
+    # Genera el "esquema" compartido: la instrucción que le dice a xcodebuild
+    # qué compilar. Sin esto, compilar desde la terminal (como hace GitHub
+    # Actions, sin abrir Xcode) no encuentra qué construir.
+    scheme:
+      configVariants: []
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.aimar.revelado
+        # Xcode genera el Info.plist automáticamente con las claves de abajo,
+        # así no hay que mantener un archivo XML aparte.
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Revelado
+        # Pantalla de arranque generada por el sistema (fondo vacío estándar).
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        # Orientaciones permitidas: vertical y ambas horizontales.
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # Solo iPhone (1 = iPhone, 2 = iPad).
+        TARGETED_DEVICE_FAMILY: "1"
+        # Números de versión: el de marketing (visible) y el de compilación.
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
+        # Firma automática: Xcode gestiona certificados y perfiles al compilar
+        # en el simulador. Para TestFlight ya afinaremos esto en el workflow.
+        CODE_SIGN_STYLE: Automatic

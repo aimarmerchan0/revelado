@@ -1,0 +1,13 @@
+# El proyecto Xcode se GENERA con XcodeGen a partir de project.yml.
+# Nunca se sube al repositorio: cada máquina lo regenera con `xcodegen generate`.
+*.xcodeproj
+*.xcworkspace
+
+# Archivos temporales de compilación y del sistema
+build/
+DerivedData/
+.DS_Store
+
+# Ajustes personales de Xcode (posición de ventanas, breakpoints, etc.)
+xcuserdata/
+*.xcuserstate
