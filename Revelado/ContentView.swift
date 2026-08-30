@@ -1,210 +1,237 @@
 // =============================================================================
-// ContentView.swift — la vista principal
+// ContentView.swift — la galería: la pantalla principal de la app
 //
-// El visor Metal a pantalla completa y, abajo, dos botones para abrir un RAW:
-//
-//   · "Carrete"  → el selector de Fotos del sistema (para los ProRAW del
-//                  iPhone guardados en el carrete).
-//   · "Archivos" → el explorador de archivos del sistema (para los .CR3 de
-//                  la Canon copiados a iCloud Drive, al iPhone por cable, etc.)
-//
-// En ambos casos el archivo elegido se copia a una carpeta temporal de la app
-// y se revela desde ahí. El original NUNCA se toca (§5.5).
+// Cuadrícula con las miniaturas de la biblioteca, un filtro por formato
+// (Todas / RAW / Otras) y los dos botones de importación: el carrete de Fotos
+// y el explorador de Archivos (que admite elegir varios a la vez).
+// Tocar una foto abre su mesa de revelado (EditorView).
 // =============================================================================
 
 import SwiftUI
+import SwiftData
 import PhotosUI
-import CoreImage
-import UniformTypeIdentifiers
 
 struct ContentView: View {
 
-    // ---- El estado de la pantalla ----
-    // @State le dice a SwiftUI: cuando esto cambie, redibuja la interfaz.
+    /// El "archivador" de SwiftData donde se guardan y leen las fichas.
+    @Environment(\.modelContext) private var contexto
+    /// Todas las fotos de la biblioteca, las más recientes primero.
+    /// @Query mantiene la lista al día sola: al importar, la galería se
+    /// refresca sin que hagamos nada.
+    @Query(sort: \Foto.fechaImportacion, order: .reverse) private var fotos: [Foto]
 
-    /// La imagen revelada actualmente en pantalla. nil = ninguna foto abierta.
-    @State private var imagenRevelada: CIImage? = nil
-    /// La foto elegida en el carrete (aún sin revelar).
+    /// El filtro de formato elegido.
+    enum Filtro: String, CaseIterable, Identifiable {
+        case todas = "Todas"
+        case raw = "RAW"
+        case otras = "Otras"
+        var id: String { rawValue }
+    }
+
+    @State private var filtro: Filtro = .todas
     @State private var seleccionCarrete: PhotosPickerItem? = nil
-    /// Controlan si los dos selectores están abiertos o no.
     @State private var mostrarCarrete = false
     @State private var mostrarArchivos = false
-    /// true mientras el revelado está en marcha (se muestra un indicador).
-    @State private var revelando = false
-    /// Mensaje de error a mostrar, o nil si no hay error.
+    @State private var importando = false
     @State private var mensajeError: String? = nil
 
-    /// Lado largo máximo de la PREVISUALIZACIÓN, en píxeles (§5.6). Cubre de
-    /// sobra la pantalla del iPhone 17 Pro. La exportación (punto 6) irá
-    /// siempre a resolución nativa completa, con el mismo código y escala 1.0.
-    private let ladoLargoPrevisualizacion: CGFloat = 3000
-
-    /// Tipos de archivo que aceptamos en "Archivos": cualquier RAW de cámara
-    /// que iOS sepa revelar (incluye el .CR3 de la R6 Mark II y el DNG).
-    private let tiposRAW: [UTType] = [.rawImage, UTType("com.adobe.raw-image")]
-        .compactMap { $0 }
+    private var fotosFiltradas: [Foto] {
+        switch filtro {
+        case .todas: return fotos
+        case .raw: return fotos.filter { $0.esRAW }
+        case .otras: return fotos.filter { !$0.esRAW }
+        }
+    }
 
     var body: some View {
-        ZStack {
-            // El visor Metal ocupa todo, con fondo negro de sala de edición.
-            VisorMetal(imagen: imagenRevelada)
-                .ignoresSafeArea()
-                .background(Color.black)
+        NavigationStack {
+            VStack(spacing: 0) {
+                Picker("Formato", selection: $filtro) {
+                    ForEach(Filtro.allCases) { f in
+                        Text(f.rawValue).tag(f)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal)
+                .padding(.vertical, 8)
 
-            // Aviso mientras no haya foto abierta.
-            if imagenRevelada == nil && !revelando {
-                VStack(spacing: 12) {
-                    Image(systemName: "camera.aperture")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.secondary)
-                    Text("Revelado")
-                        .font(.largeTitle.bold())
-                        .foregroundStyle(.white)
-                    Text("Abre un RAW con los botones de abajo.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                if fotosFiltradas.isEmpty {
+                    Spacer()
+                    VStack(spacing: 12) {
+                        Image(systemName: "camera.aperture")
+                            .font(.system(size: 48))
+                            .foregroundStyle(.secondary)
+                        Text(fotos.isEmpty
+                             ? "Biblioteca vacía.\nImporta fotos con los botones de arriba."
+                             : "No hay fotos de este formato.")
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 110),
+                                                     spacing: 2)],
+                                  spacing: 2) {
+                            ForEach(fotosFiltradas) { foto in
+                                NavigationLink {
+                                    EditorView(foto: foto)
+                                } label: {
+                                    CeldaFoto(foto: foto)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
                 }
             }
-
-            // Indicador mientras el revelado trabaja.
-            if revelando {
-                ProgressView("Revelando…")
-                    .tint(.white)
-                    .foregroundStyle(.white)
-                    .padding(24)
-                    .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+            .navigationTitle("Revelado")
+            .toolbar {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if importando {
+                        ProgressView()
+                    }
+                    Button {
+                        mostrarCarrete = true
+                    } label: {
+                        Label("Carrete", systemImage: "photo.on.rectangle")
+                    }
+                    Button {
+                        mostrarArchivos = true
+                    } label: {
+                        Label("Archivos", systemImage: "folder")
+                    }
+                }
             }
         }
-        .preferredColorScheme(.dark) // sala de edición: interfaz siempre oscura
-        // La barra de botones, respetando el borde inferior de la pantalla.
-        .safeAreaInset(edge: .bottom) { barraInferior }
-        // Selector del carrete. preferredItemEncoding .current pide el archivo
-        // ORIGINAL tal cual está guardado (el DNG), no una copia recomprimida.
+        .preferredColorScheme(.dark)
+        // Carrete: pide el archivo ORIGINAL (.current), no una copia comprimida.
         .photosPicker(isPresented: $mostrarCarrete,
                       selection: $seleccionCarrete,
                       matching: .images,
                       preferredItemEncoding: .current)
-        // Selector de archivos sueltos, limitado a tipos RAW.
+        // Archivos: cualquier imagen (RAW o no), varios a la vez.
         .fileImporter(isPresented: $mostrarArchivos,
-                      allowedContentTypes: tiposRAW) { resultado in
-            abrirDesdeArchivos(resultado)
+                      allowedContentTypes: [.image, .rawImage],
+                      allowsMultipleSelection: true) { resultado in
+            importarDesdeArchivos(resultado)
         }
-        // Cuando el usuario elige algo en el carrete, se lanza el revelado.
         .onChange(of: seleccionCarrete) { _, nuevaSeleccion in
             guard let nuevaSeleccion else { return }
-            Task { await abrirDesdeCarrete(nuevaSeleccion) }
+            Task { await importarDesdeCarrete(nuevaSeleccion) }
         }
-        // Aviso de error con el mensaje literal, para poder diagnosticar.
-        .alert("No se pudo abrir la foto", isPresented: hayError) {
+        .alert("No se pudo importar", isPresented: hayError) {
             Button("Entendido", role: .cancel) { mensajeError = nil }
         } message: {
             Text(mensajeError ?? "")
         }
     }
 
-    /// Los dos botones de apertura.
-    private var barraInferior: some View {
-        HStack(spacing: 16) {
-            Button {
-                mostrarCarrete = true
-            } label: {
-                Label("Carrete", systemImage: "photo.on.rectangle")
-            }
-            Button {
-                mostrarArchivos = true
-            } label: {
-                Label("Archivos", systemImage: "folder")
-            }
-        }
-        .buttonStyle(.bordered)
-        .tint(.white)
-        .padding(.vertical, 10)
-    }
-
-    /// Traduce "¿hay error?" al formato si/no que necesita el aviso.
     private var hayError: Binding<Bool> {
         Binding(get: { mensajeError != nil },
                 set: { siHay in if !siHay { mensajeError = nil } })
     }
 
     // =========================================================================
-    // Apertura desde el carrete de Fotos
+    // Importación desde el carrete
     // =========================================================================
     @MainActor
-    private func abrirDesdeCarrete(_ elemento: PhotosPickerItem) async {
-        revelando = true
+    private func importarDesdeCarrete(_ elemento: PhotosPickerItem) async {
+        importando = true
         defer {
-            revelando = false
-            seleccionCarrete = nil // listo para elegir otra foto después
+            importando = false
+            seleccionCarrete = nil
         }
         do {
-            // Pedimos los bytes del archivo original al carrete.
             guard let datos = try await elemento.loadTransferable(type: Data.self) else {
                 mensajeError = "El carrete no entregó el archivo original."
                 return
             }
-            // Copia temporal con la extensión correcta, para que el revelador
-            // sepa qué formato tiene delante.
-            let extensionArchivo = elemento.supportedContentTypes.first?
-                .preferredFilenameExtension ?? "dng"
-            let urlTemporal = FileManager.default.temporaryDirectory
-                .appendingPathComponent("carrete-\(UUID().uuidString)")
-                .appendingPathExtension(extensionArchivo)
-            try datos.write(to: urlTemporal)
-
-            try await revelar(url: urlTemporal)
+            let tipo = elemento.supportedContentTypes.first
+            let ext = tipo?.preferredFilenameExtension ?? "dng"
+            let nombre = "Carrete \(Date().formatted(date: .abbreviated, time: .shortened))"
+            // La copia y la miniatura son trabajo pesado: al laboratorio de atrás.
+            let ficha = try await Task.detached(priority: .userInitiated) {
+                try Biblioteca.importar(datos: datos,
+                                        nombreOriginal: nombre,
+                                        extensionArchivo: ext)
+            }.value
+            contexto.insert(ficha)
         } catch {
             mensajeError = error.localizedDescription
         }
     }
 
     // =========================================================================
-    // Apertura desde el explorador de archivos
+    // Importación desde el explorador de Archivos (admite varios)
     // =========================================================================
-    private func abrirDesdeArchivos(_ resultado: Result<URL, Error>) {
+    private func importarDesdeArchivos(_ resultado: Result<[URL], Error>) {
         Task { @MainActor in
-            revelando = true
-            defer { revelando = false }
+            importando = true
+            defer { importando = false }
             do {
-                let urlElegida = try resultado.get()
-
-                // El sistema entrega el archivo "precintado" (protección de
-                // iOS): hay que abrir el precinto, copiarlo a nuestra carpeta
-                // temporal y cerrarlo. El original queda intacto donde estaba.
-                let precintoAbierto = urlElegida.startAccessingSecurityScopedResource()
-                defer {
-                    if precintoAbierto { urlElegida.stopAccessingSecurityScopedResource() }
+                let urls = try resultado.get()
+                var fallos: [String] = []
+                for url in urls {
+                    // Abrir el "precinto" de seguridad de iOS, copiar, cerrar.
+                    let precintoAbierto = url.startAccessingSecurityScopedResource()
+                    defer {
+                        if precintoAbierto { url.stopAccessingSecurityScopedResource() }
+                    }
+                    do {
+                        let ficha = try await Task.detached(priority: .userInitiated) {
+                            try Biblioteca.importar(desde: url)
+                        }.value
+                        contexto.insert(ficha)
+                    } catch {
+                        fallos.append(url.lastPathComponent)
+                    }
                 }
-
-                let urlTemporal = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("archivo-\(UUID().uuidString)-\(urlElegida.lastPathComponent)")
-                try FileManager.default.copyItem(at: urlElegida, to: urlTemporal)
-
-                try await revelar(url: urlTemporal)
+                if !fallos.isEmpty {
+                    mensajeError = "No se pudieron importar: \(fallos.joined(separator: ", "))"
+                }
             } catch {
                 mensajeError = error.localizedDescription
             }
         }
     }
+}
 
-    // =========================================================================
-    // El revelado en sí, fuera del hilo principal para no congelar la interfaz
-    // =========================================================================
-    @MainActor
-    private func revelar(url: URL) async throws {
-        let ladoMaximo = ladoLargoPrevisualizacion
-        // Task.detached = "llévate este trabajo al laboratorio de atrás":
-        // el revelado tarda uno o dos segundos y la interfaz debe seguir viva.
-        let imagen = try await Task.detached(priority: .userInitiated) {
-            try MotorRevelado.compartido.decodificarRAWParaPantalla(
-                en: url,
-                ladoLargoMaximoPixeles: ladoMaximo)
-        }.value
-        imagenRevelada = imagen
+/// Una celda de la cuadrícula: miniatura cuadrada con etiqueta de formato.
+private struct CeldaFoto: View {
+    let foto: Foto
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Color(.systemGray6)
+                .aspectRatio(1, contentMode: .fill)
+                .overlay {
+                    if let datos = foto.miniatura, let ui = UIImage(data: datos) {
+                        Image(uiImage: ui)
+                            .resizable()
+                            .scaledToFill()
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.title)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .clipped()
+
+            Text(foto.esRAW ? "RAW" : foto.extensionArchivo.uppercased())
+                .font(.caption2.bold())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.black.opacity(0.65), in: Capsule())
+                .foregroundStyle(.white)
+                .padding(4)
+        }
+        .contentShape(Rectangle())
     }
 }
 
 // Vista previa para el lienzo de Xcode (no forma parte de la app final).
 #Preview {
     ContentView()
+        .modelContainer(for: Foto.self, inMemory: true)
 }

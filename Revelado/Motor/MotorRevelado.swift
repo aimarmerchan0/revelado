@@ -123,4 +123,27 @@ final class MotorRevelado {
         }
         return imagen
     }
+
+    /// Carga cualquier imagen de la biblioteca para mostrarla en pantalla:
+    /// los RAW pasan por el revelador (CIRAWFilter); los demás formatos
+    /// (JPEG, HEIC, TIFF...) se abren directamente, respetando la orientación
+    /// de la cámara, y se reducen si superan el lado máximo pedido.
+    func cargarParaPantalla(en url: URL, esRAW: Bool,
+                            ladoLargoMaximoPixeles: CGFloat) throws -> CIImage {
+        if esRAW {
+            return try decodificarRAWParaPantalla(
+                en: url, ladoLargoMaximoPixeles: ladoLargoMaximoPixeles)
+        }
+
+        guard let imagen = CIImage(contentsOf: url,
+                                   options: [.applyOrientationProperty: true]) else {
+            throw ErrorMotor.decodificacionFallida(url)
+        }
+        let ladoLargo = max(imagen.extent.width, imagen.extent.height)
+        if ladoLargo > ladoLargoMaximoPixeles, ladoLargo > 0 {
+            let factor = ladoLargoMaximoPixeles / ladoLargo
+            return imagen.transformed(by: .init(scaleX: factor, y: factor))
+        }
+        return imagen
+    }
 }

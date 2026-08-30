@@ -8,6 +8,7 @@
 // =============================================================================
 
 import SwiftUI
+import SwiftData
 
 @main
 struct ReveladoApp: App {
@@ -15,5 +16,8 @@ struct ReveladoApp: App {
         WindowGroup {
             ContentView()
         }
+        // Abre (o crea) la base de datos local de la biblioteca y la pone a
+        // disposición de todas las pantallas.
+        .modelContainer(for: Foto.self)
     }
 }
