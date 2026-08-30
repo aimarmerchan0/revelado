@@ -26,10 +26,20 @@ struct ParametrosEdicion: Codable, Equatable {
     var negros: Double = 0
 
     // --- Balance de blancos ---
-    /// Temperatura (-100...+100). Positivo = más cálido (~±2000 K).
+    /// Temperatura (-100...+100). Positivo = más cálido (~±3500 K).
     var temperatura: Double = 0
     /// Matiz (-100...+100). Positivo = magenta, negativo = verde.
     var matiz: Double = 0
+
+    // Cuentagotas de punto neutro. En RAW se guarda DÓNDE se tocó (coordenada
+    // normalizada 0...1) y el revelador calcula el balance en ese punto; así
+    // preview y exportación usan el mismo dato. En no-RAW se guarda el COLOR
+    // muestreado que debe quedar gris. nil = sin punto neutro elegido.
+    var puntoNeutroX: Double? = nil
+    var puntoNeutroY: Double? = nil
+    var neutroR: Double? = nil
+    var neutroG: Double? = nil
+    var neutroB: Double? = nil
 
     // --- Color ---
     /// Intensidad (vibrance): satura con cuidado, protegiendo lo ya saturado.

@@ -32,6 +32,13 @@ struct EditorView: View {
     @State private var mensajeError: String? = nil
     @State private var cargada = false
 
+    /// La foto tal cual salió de cámara, para el "antes/después"
+    /// (mantener pulsada la foto muestra el original).
+    @State private var imagenOriginal: CIImage? = nil
+    @State private var mostrandoOriginal = false
+    /// true mientras el cuentagotas de punto neutro espera un toque.
+    @State private var modoCuentagotas = false
+
     // --- Estado de exportación ---
     @State private var exportando = false
     @State private var avisoExportacion: String? = nil
@@ -57,8 +64,52 @@ struct EditorView: View {
         VStack(spacing: 0) {
             // ---- El visor: la foto a sangre completa ----
             ZStack {
-                VisorMetal(imagen: imagen)
-                    .background(Color.black)
+                GeometryReader { geo in
+                    VisorMetal(imagen: mostrandoOriginal ? (imagenOriginal ?? imagen) : imagen)
+                        .background(Color.black)
+                        .contentShape(Rectangle())
+                        // Cuentagotas: un toque elige el punto que debe ser neutro.
+                        .onTapGesture(coordinateSpace: .local) { posicion in
+                            guard modoCuentagotas else { return }
+                            aplicarCuentagotas(en: posicion, tamanoVisor: geo.size)
+                        }
+                        // Antes/después: mantener pulsado muestra el original.
+                        .gesture(
+                            modoCuentagotas ? nil :
+                            LongPressGesture(minimumDuration: 0.2)
+                                .sequenced(before: DragGesture(minimumDistance: 0))
+                                .onChanged { valor in
+                                    // Solo tras completarse la pulsación larga.
+                                    if case .second = valor { mostrandoOriginal = true }
+                                }
+                                .onEnded { _ in mostrandoOriginal = false }
+                        )
+                }
+
+                if mostrandoOriginal {
+                    VStack {
+                        Text("Original")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(.ultraThinMaterial, in: Capsule())
+                        Spacer()
+                    }
+                    .padding(.top, 10)
+                }
+
+                if modoCuentagotas {
+                    VStack {
+                        Label("Toca una zona que deba ser gris neutro",
+                              systemImage: "eyedropper")
+                            .font(.caption.bold())
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(.ultraThinMaterial, in: Capsule())
+                        Spacer()
+                    }
+                    .padding(.top, 10)
+                }
 
                 if imagen == nil && mensajeError == nil {
                     ProgressView("Revelando…")
@@ -164,6 +215,7 @@ struct EditorView: View {
                         FilaAjuste("Blancos", valor: $parametros.blancos)
                         FilaAjuste("Negros", valor: $parametros.negros)
                     case .color:
+                        cabeceraBalanceBlancos
                         FilaAjuste("Temperatura", valor: $parametros.temperatura)
                         FilaAjuste("Matiz", valor: $parametros.matiz)
                         FilaAjuste("Intensidad", valor: $parametros.intensidad)
@@ -176,6 +228,126 @@ struct EditorView: View {
         }
         .frame(height: 300)
         .background(.thinMaterial)
+    }
+
+    // =========================================================================
+    // Balance de blancos: cuentagotas y preajustes
+    // =========================================================================
+
+    /// Preajustes clásicos de balance de blancos, en Kelvin y matiz.
+    private struct PreajusteBB {
+        let nombre: String
+        let kelvin: Double
+        let matiz: Double
+    }
+    private static let preajustesBB: [PreajusteBB] = [
+        .init(nombre: "Luz de día", kelvin: 5500, matiz: 3),
+        .init(nombre: "Nublado", kelvin: 6500, matiz: 3),
+        .init(nombre: "Sombra", kelvin: 7500, matiz: 5),
+        .init(nombre: "Tungsteno", kelvin: 2850, matiz: 0),
+        .init(nombre: "Fluorescente", kelvin: 3800, matiz: 20),
+        .init(nombre: "Flash", kelvin: 5500, matiz: 0),
+    ]
+
+    private var cabeceraBalanceBlancos: some View {
+        HStack {
+            Text("Balance de blancos")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Spacer()
+            // El cuentagotas: elegir en la foto el punto que debe ser neutro.
+            Button {
+                withAnimation(.snappy) { modoCuentagotas.toggle() }
+            } label: {
+                Image(systemName: "eyedropper")
+                    .symbolVariant(modoCuentagotas ? .fill : .none)
+            }
+            .buttonStyle(.bordered)
+            .tint(modoCuentagotas ? Color.accentColor : .secondary)
+            .accessibilityLabel("Cuentagotas de punto neutro")
+
+            // Los preajustes clásicos.
+            Menu {
+                Button("Como se disparó") { aplicarBBOriginal() }
+                Divider()
+                ForEach(Self.preajustesBB, id: \.nombre) { preajuste in
+                    Button(preajuste.nombre) { aplicar(preajuste) }
+                }
+            } label: {
+                Image(systemName: "list.bullet")
+            }
+            .buttonStyle(.bordered)
+            .tint(.secondary)
+            .accessibilityLabel("Preajustes de balance de blancos")
+        }
+        .padding(.top, 8)
+    }
+
+    /// Vuelve al balance con el que la cámara disparó.
+    private func aplicarBBOriginal() {
+        withAnimation(.snappy) {
+            parametros.puntoNeutroX = nil
+            parametros.puntoNeutroY = nil
+            parametros.neutroR = nil
+            parametros.neutroG = nil
+            parametros.neutroB = nil
+            parametros.temperatura = 0
+            parametros.matiz = 0
+        }
+    }
+
+    /// Aplica un preajuste: fija la temperatura objetivo en Kelvin.
+    private func aplicar(_ preajuste: PreajusteBB) {
+        let baseKelvin = foto.esRAW ? Double(temperaturaBase) : 6500
+        let baseMatiz = foto.esRAW ? Double(tinteBase) : 0
+        withAnimation(.snappy) {
+            parametros.puntoNeutroX = nil
+            parametros.puntoNeutroY = nil
+            parametros.neutroR = nil
+            parametros.neutroG = nil
+            parametros.neutroB = nil
+            parametros.temperatura = ((preajuste.kelvin - baseKelvin)
+                / MotorRevelado.kelvinPorUnidad).redondeadoA(-100...100)
+            parametros.matiz = ((preajuste.matiz - baseMatiz)
+                / MotorRevelado.matizPorUnidad).redondeadoA(-100...100)
+        }
+    }
+
+    /// El toque del cuentagotas: convierte la posición del dedo en la
+    /// coordenada de la imagen (el visor encaja la foto centrada) y guarda
+    /// el punto neutro en la receta.
+    private func aplicarCuentagotas(en posicion: CGPoint, tamanoVisor: CGSize) {
+        guard let extension_ = imagen?.extent,
+              extension_.width > 0, extension_.height > 0,
+              tamanoVisor.width > 0, tamanoVisor.height > 0 else { return }
+
+        let escala = min(tamanoVisor.width / extension_.width,
+                         tamanoVisor.height / extension_.height)
+        let margenX = (tamanoVisor.width - extension_.width * escala) / 2
+        let margenY = (tamanoVisor.height - extension_.height * escala) / 2
+
+        let nx = (posicion.x - margenX) / (extension_.width * escala)
+        // La pantalla cuenta desde arriba y la imagen desde abajo: se invierte.
+        let ny = 1 - (posicion.y - margenY) / (extension_.height * escala)
+        guard (0...1).contains(nx), (0...1).contains(ny) else { return }
+
+        withAnimation(.snappy) {
+            if foto.esRAW {
+                // El revelador calcula el neutro en ese punto del RAW.
+                parametros.puntoNeutroX = nx
+                parametros.puntoNeutroY = ny
+            } else if let base = imagenBase,
+                      let color = MotorRevelado.compartido.colorNeutroMuestreado(
+                        en: base, puntoNormalizado: CGPoint(x: nx, y: ny)) {
+                parametros.neutroR = color.0
+                parametros.neutroG = color.1
+                parametros.neutroB = color.2
+            }
+            // Los deslizadores parten de cero sobre el nuevo neutro.
+            parametros.temperatura = 0
+            parametros.matiz = 0
+            modoCuentagotas = false
+        }
     }
 
     // =========================================================================
@@ -199,12 +371,16 @@ struct EditorView: View {
                 }.value
                 temperaturaBase = filtro.neutralTemperature
                 tinteBase = filtro.neutralTint
+                // La foto tal cual salió de cámara, para el antes/después.
+                imagenOriginal = filtro.outputImage
                 filtroRAW = filtro
             } else {
-                imagenBase = try await Task.detached(priority: .userInitiated) {
+                let base = try await Task.detached(priority: .userInitiated) {
                     try MotorRevelado.compartido.cargarParaPantalla(
                         en: url, esRAW: false, ladoLargoMaximoPixeles: lado)
                 }.value
+                imagenBase = base
+                imagenOriginal = base
             }
 
             cargada = true
@@ -219,13 +395,14 @@ struct EditorView: View {
         var base: CIImage?
 
         if let filtroRAW {
-            filtroRAW.neutralTemperature = temperaturaBase + Float(parametros.temperatura) * 20
-            filtroRAW.neutralTint = tinteBase + Float(parametros.matiz) * 0.3
+            // Punto de partida: el balance de cámara. Encima, el punto neutro
+            // del cuentagotas y/o los deslizadores (mismo código que exportar).
+            filtroRAW.neutralTemperature = temperaturaBase
+            filtroRAW.neutralTint = tinteBase
+            motor.configurarBalanceBlancosRAW(en: filtroRAW, parametros: parametros)
             base = filtroRAW.outputImage
         } else if let imagenBase {
-            base = motor.aplicarTemperaturaYMatiz(a: imagenBase,
-                                                  temperatura: parametros.temperatura,
-                                                  matiz: parametros.matiz)
+            base = motor.aplicarBalanceBlancosNoRAW(a: imagenBase, parametros: parametros)
         }
 
         guard let base else { return }
@@ -347,6 +524,13 @@ private struct FilaAjuste: View {
             Slider(value: $valor, in: rango, step: paso)
         }
         .padding(.vertical, 7) // filas de ≥44 pt: objetivo táctil cómodo
+    }
+}
+
+private extension Double {
+    /// Limita el valor a un rango y lo redondea al entero más cercano.
+    func redondeadoA(_ rango: ClosedRange<Double>) -> Double {
+        Swift.min(rango.upperBound, Swift.max(rango.lowerBound, self)).rounded()
     }
 }
 

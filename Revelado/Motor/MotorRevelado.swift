@@ -176,9 +176,8 @@ final class MotorRevelado {
         if esRAW {
             let filtroRAW = try crearFiltroRAW(para: url)
             filtroRAW.scaleFactor = 1.0 // resolución nativa completa
-            // Mismo balance de blancos que en edición: el de cámara + el ajuste.
-            filtroRAW.neutralTemperature += Float(parametros.temperatura) * 20
-            filtroRAW.neutralTint += Float(parametros.matiz) * 0.3
+            // Mismo balance de blancos que en edición (§5.6).
+            configurarBalanceBlancosRAW(en: filtroRAW, parametros: parametros)
             guard let imagen = filtroRAW.outputImage else {
                 throw ErrorMotor.decodificacionFallida(url)
             }
@@ -188,9 +187,7 @@ final class MotorRevelado {
                                        options: [.applyOrientationProperty: true]) else {
                 throw ErrorMotor.decodificacionFallida(url)
             }
-            base = aplicarTemperaturaYMatiz(a: imagen,
-                                            temperatura: parametros.temperatura,
-                                            matiz: parametros.matiz)
+            base = aplicarBalanceBlancosNoRAW(a: imagen, parametros: parametros)
         }
         return aplicarAjustes(a: base, parametros: parametros)
     }
@@ -221,18 +218,86 @@ final class MotorRevelado {
     // única vez al dibujar (§5.4), en 16 bits y luz lineal (§5.1, §5.2).
     // =========================================================================
 
-    /// Balance de blancos para fotos NO RAW (las RAW lo hacen en el revelado
-    /// vía neutralTemperature/neutralTint del CIRAWFilter).
-    func aplicarTemperaturaYMatiz(a origen: CIImage,
-                                  temperatura: Double, matiz: Double) -> CIImage {
-        guard temperatura != 0 || matiz != 0 else { return origen }
-        let filtro = CIFilter.temperatureAndTint()
-        filtro.inputImage = origen
-        filtro.neutral = CIVector(x: 6500, y: 0)
-        // +temperatura = más cálido (~±2000 K); +matiz = magenta.
-        filtro.targetNeutral = CIVector(x: 6500 + CGFloat(temperatura) * 20,
-                                        y: CGFloat(matiz) * 0.3)
-        return filtro.outputImage ?? origen
+    /// Conversión del deslizador de temperatura a Kelvin: ±100 ≈ ±3500 K,
+    /// suficiente para ir de tungsteno a sombra desde una base de luz día.
+    static let kelvinPorUnidad: Double = 35
+    /// Conversión del deslizador de matiz al eje verde-magenta.
+    static let matizPorUnidad: Double = 0.4
+
+    /// Balance de blancos para fotos NO RAW (las RAW lo hacen dentro del
+    /// revelado vía neutralTemperature/neutralTint/neutralLocation).
+    /// Primero el punto neutro del cuentagotas (si lo hay): el color
+    /// muestreado se lleva a gris. Después, los ajustes finos de los
+    /// deslizadores encima.
+    func aplicarBalanceBlancosNoRAW(a origen: CIImage,
+                                    parametros p: ParametrosEdicion) -> CIImage {
+        var imagen = origen
+
+        if let r = p.neutroR, let g = p.neutroG, let b = p.neutroB {
+            let filtro = CIFilter.whitePointAdjust()
+            filtro.inputImage = imagen
+            filtro.color = CIColor(red: r, green: g, blue: b)
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        if p.temperatura != 0 || p.matiz != 0 {
+            let filtro = CIFilter.temperatureAndTint()
+            filtro.inputImage = imagen
+            filtro.neutral = CIVector(x: 6500, y: 0)
+            filtro.targetNeutral = CIVector(
+                x: 6500 + CGFloat(p.temperatura * Self.kelvinPorUnidad),
+                y: CGFloat(p.matiz * Self.matizPorUnidad))
+            imagen = filtro.outputImage ?? imagen
+        }
+        return imagen
+    }
+
+    /// Configura el balance de blancos de un CIRAWFilter según la receta.
+    /// Mismo código para previsualización y exportación (§5.6): el punto
+    /// neutro va en coordenadas normalizadas, válidas a cualquier escala.
+    func configurarBalanceBlancosRAW(en filtroRAW: CIRAWFilter,
+                                     parametros p: ParametrosEdicion) {
+        if let nx = p.puntoNeutroX, let ny = p.puntoNeutroY {
+            let nativo = filtroRAW.nativeSize
+            filtroRAW.neutralLocation = CGPoint(x: nx * nativo.width,
+                                                y: ny * nativo.height)
+        }
+        // Ajuste fino de los deslizadores sobre el neutro actual
+        // (el de cámara, o el del cuentagotas si se acaba de fijar).
+        if p.temperatura != 0 || p.matiz != 0 {
+            let baseT = filtroRAW.neutralTemperature
+            let baseM = filtroRAW.neutralTint
+            filtroRAW.neutralTemperature = baseT + Float(p.temperatura * Self.kelvinPorUnidad)
+            filtroRAW.neutralTint = baseM + Float(p.matiz * Self.matizPorUnidad)
+        }
+    }
+
+    /// Muestrea el color medio de una zona pequeña de la imagen (coordenada
+    /// normalizada 0...1) y lo devuelve normalizado en brillo, listo para el
+    /// cuentagotas de punto neutro en fotos no RAW.
+    func colorNeutroMuestreado(en imagen: CIImage,
+                               puntoNormalizado: CGPoint) -> (Double, Double, Double)? {
+        let ext = imagen.extent
+        let centroX = ext.origin.x + puntoNormalizado.x * ext.width
+        let centroY = ext.origin.y + puntoNormalizado.y * ext.height
+        let radio: CGFloat = 8
+        let zona = CGRect(x: centroX - radio, y: centroY - radio,
+                          width: radio * 2, height: radio * 2).intersection(ext)
+        guard !zona.isEmpty else { return nil }
+
+        let filtro = CIFilter.areaAverage()
+        filtro.inputImage = imagen
+        filtro.extent = zona
+        guard let promedio = filtro.outputImage else { return nil }
+
+        var pixel = [UInt8](repeating: 0, count: 4)
+        contexto.render(promedio, toBitmap: &pixel, rowBytes: 4,
+                        bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                        format: .RGBA8, colorSpace: espacioSalidaPantalla)
+        let r = Double(pixel[0]), g = Double(pixel[1]), b = Double(pixel[2])
+        let maximo = max(r, g, b)
+        guard maximo > 0 else { return nil } // zona negra pura: no sirve de neutro
+        return (r / maximo, g / maximo, b / maximo)
     }
 
     /// Aplica la receta completa de tono y color sobre una imagen ya revelada.
