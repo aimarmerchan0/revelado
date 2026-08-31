@@ -472,9 +472,7 @@ struct EditorView: View {
             ForEach(presetsGuardados) { preset in
                 HStack {
                     Button {
-                        if let receta = preset.parametros {
-                            aplicarLook(receta)
-                        }
+                        aplicarPresetGuardado(preset)
                     } label: {
                         Label(preset.nombre, systemImage: "square.stack.3d.up")
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -503,10 +501,76 @@ struct EditorView: View {
         }
     }
 
+    /// Aplica un preset del usuario. Con Inteligente activado, adapta la
+    /// exposición al tono de ESTA foto: mide su luminosidad mediana, la
+    /// compara con la de la foto donde se creó el preset y compensa la
+    /// diferencia en pasos EV — el mismo estilo, caiga sobre una foto clara
+    /// u oscura. Después protege luces y sombras como el Auto.
+    private func aplicarPresetGuardado(_ preset: PresetGuardado) {
+        guard let receta = preset.parametros else { return }
+        withAnimation(.snappy) {
+            parametros.fusionarLook(receta)
+        }
+        guard presetsInteligentes else { return }
+
+        guard let referencia = preset.tonoMedioReferencia,
+              let original = imagenOriginal else {
+            // Preset antiguo sin medición: al menos, Auto respetando el look.
+            aplicarAuto(preservandoLook: true)
+            return
+        }
+
+        Task {
+            let estadisticas = await Task.detached(priority: .userInitiated) {
+                MotorRevelado.compartido.estadisticasTonales(de: original)
+            }.value
+            guard let estadisticas else { return }
+            await MainActor.run {
+                withAnimation(.snappy) {
+                    // Compensar la diferencia de tono entre ambas fotos.
+                    let objetivo = max(0.02, referencia)
+                    let actual = max(0.02, estadisticas.p50)
+                    let compensacion = min(1.5, max(-1.5, log2(objetivo / actual)))
+                    var exposicion = receta.exposicion + compensacion
+
+                    // Protección de extremos, como en el Auto profesional.
+                    let lucesPrevistas = min(1.5, estadisticas.p99 * pow(2, exposicion))
+                    if lucesPrevistas > 0.96 {
+                        let exceso = lucesPrevistas - 0.96
+                        exposicion -= min(0.8, exceso * 1.5)
+                        parametros.altasLuces = min(parametros.altasLuces,
+                                                    -min(75, (exceso * 260).rounded()))
+                    }
+                    let sombrasPrevistas = estadisticas.p01 * pow(2, exposicion)
+                    if sombrasPrevistas < 0.015 {
+                        parametros.sombras = max(parametros.sombras,
+                                                 min(60, ((0.015 - sombrasPrevistas) * 3500).rounded()))
+                    }
+
+                    parametros.exposicion = exposicion.redondeadoAPaso(0.05)
+                }
+            }
+        }
+    }
+
+    /// Guarda el preset midiendo antes el tono medio de la foto actual,
+    /// para que luego pueda adaptarse a fotos más claras u oscuras.
     private func guardarPresetNuevo() {
         let nombre = nombreNuevoPreset.trimmingCharacters(in: .whitespaces)
         guard !nombre.isEmpty else { return }
-        contextoDatos.insert(PresetGuardado(nombre: nombre, parametros: parametros))
+        let receta = parametros
+        let original = imagenOriginal
+        Task {
+            let tonoMedio: Double? = await Task.detached(priority: .userInitiated) {
+                guard let original else { return nil }
+                return MotorRevelado.compartido.estadisticasTonales(de: original)?.p50
+            }.value
+            await MainActor.run {
+                contextoDatos.insert(PresetGuardado(nombre: nombre,
+                                                    parametros: receta,
+                                                    tonoMedioReferencia: tonoMedio))
+            }
+        }
     }
 
     // ---- Selecciones (IA y análisis en el dispositivo) ----

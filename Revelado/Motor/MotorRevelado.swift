@@ -372,6 +372,46 @@ final class MotorRevelado {
         return (r / maximo, g / maximo, b / maximo)
     }
 
+    /// El mecanismo compartido de las cuatro bandas tonales: construye una
+    /// máscara de luminosidad (la rampa dice qué tonos entran y con cuánta
+    /// caída), aplica exposición real dentro de la banda y funde con el
+    /// original. La rampa se evalúa en términos perceptuales (sRGB), donde
+    /// 0.5 es el gris medio que ve el ojo.
+    private func ajusteBandaTonal(_ origen: CIImage, ev: Double,
+                                  rampa: [PuntoCurva]) -> CIImage {
+        guard ev != 0 else { return origen }
+
+        // 1) Luminosidad de cada píxel, en gris.
+        let luma = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+        let gris = CIFilter.colorMatrix()
+        gris.inputImage = origen
+        gris.rVector = luma
+        gris.gVector = luma
+        gris.bVector = luma
+        gris.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        var mascara = gris.outputImage ?? origen
+
+        // 2) La rampa de la banda, con transición suave.
+        let curva = CIFilter.colorCurves()
+        curva.inputImage = mascara
+        curva.curvesData = ProcesadoColor.datosCurvaUnica(rampa)
+        curva.curvesDomain = CIVector(x: 0, y: 1)
+        curva.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        mascara = curva.outputImage ?? mascara
+
+        // 3) Exposición dentro de la banda y fundido con el original.
+        let expuesta = CIFilter.exposureAdjust()
+        expuesta.inputImage = origen
+        expuesta.ev = Float(ev)
+        guard let ajustada = expuesta.outputImage else { return origen }
+
+        let fusion = CIFilter.blendWithMask()
+        fusion.inputImage = ajustada
+        fusion.backgroundImage = origen
+        fusion.maskImage = mascara
+        return fusion.outputImage ?? origen
+    }
+
     /// Geometría: giros de 90°, espejo y enderezado del horizonte. Se aplica
     /// antes que cualquier ajuste de color. Al enderezar, la imagen se amplía
     /// lo justo para que no asomen los bordes vacíos y se recorta al marco.
@@ -437,56 +477,46 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
-        // Altas luces y sombras (recuperación).
-        if p.altasLuces < 0 || p.sombras != 0 {
-            let filtro = CIFilter.highlightShadowAdjust()
-            filtro.inputImage = imagen
-            // 1.0 = sin cambio; hacia 0.3 = recuperar altas luces.
-            filtro.highlightAmount = p.altasLuces < 0
-                ? Float(1.0 + p.altasLuces / 100.0 * 0.7)
-                : 1.0
-            // 0 = sin cambio; +1 abre sombras, -1 las cierra.
-            filtro.shadowAmount = Float(p.sombras / 100.0)
-            imagen = filtro.outputImage ?? imagen
+        // ---- Las cuatro bandas tonales: altas luces, sombras, blancos y
+        // negros. Todas con el MISMO mecanismo profesional: una máscara de
+        // luminosidad con caída progresiva limita el efecto a su banda, y
+        // dentro de ella se aplica exposición real (pasos EV). Subir +20 y
+        // bajar -20 son movimientos espejo exactos: simetría garantizada.
+        //   · Altas luces: banda alta ancha, se desvanece hacia los medios.
+        //   · Sombras: banda baja ancha, se desvanece hacia los medios.
+        //   · Blancos: solo el extremo superior (el punto blanco).
+        //   · Negros: solo el extremo inferior (el punto negro).
+        if p.altasLuces != 0 {
+            imagen = ajusteBandaTonal(imagen,
+                                      ev: p.altasLuces / 100.0 * 1.3,
+                                      rampa: [PuntoCurva(x: 0, y: 0),
+                                              PuntoCurva(x: 0.45, y: 0),
+                                              PuntoCurva(x: 0.85, y: 1),
+                                              PuntoCurva(x: 1, y: 1)])
         }
-
-        // Altas luces en positivo (realzar): pequeña subida del tramo alto
-        // de la curva. (Se refinará con kernel propio más adelante.)
-        if p.altasLuces > 0 {
-            let filtro = CIFilter.toneCurve()
-            filtro.inputImage = imagen
-            filtro.point0 = CGPoint(x: 0, y: 0)
-            filtro.point1 = CGPoint(x: 0.25, y: 0.25)
-            filtro.point2 = CGPoint(x: 0.5, y: 0.5)
-            filtro.point3 = CGPoint(x: 0.75, y: 0.75 + p.altasLuces / 100.0 * 0.12)
-            filtro.point4 = CGPoint(x: 1, y: 1)
-            imagen = filtro.outputImage ?? imagen
+        if p.sombras != 0 {
+            imagen = ajusteBandaTonal(imagen,
+                                      ev: p.sombras / 100.0 * 1.5,
+                                      rampa: [PuntoCurva(x: 0, y: 1),
+                                              PuntoCurva(x: 0.15, y: 1),
+                                              PuntoCurva(x: 0.55, y: 0),
+                                              PuntoCurva(x: 1, y: 0)])
         }
-
-        // Blancos (ganancia del punto blanco) y negros (desplazamiento del
-        // punto negro), como mover los extremos de la escala.
-        if p.blancos != 0 || p.negros != 0 {
-            let ganancia = CGFloat(1.0 + p.blancos / 100.0 * 0.25)
-            let sesgo = CGFloat(p.negros / 100.0 * 0.06)
-            let filtro = CIFilter.colorMatrix()
-            filtro.inputImage = imagen
-            filtro.rVector = CIVector(x: ganancia, y: 0, z: 0, w: 0)
-            filtro.gVector = CIVector(x: 0, y: ganancia, z: 0, w: 0)
-            filtro.bVector = CIVector(x: 0, y: 0, z: ganancia, w: 0)
-            filtro.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
-            filtro.biasVector = CIVector(x: sesgo, y: sesgo, z: sesgo, w: 0)
-            imagen = filtro.outputImage ?? imagen
-
-            // Si se empastan negros (sesgo negativo) evitamos valores por
-            // debajo de cero, que no tienen sentido físico. Por arriba NO se
-            // recorta: las altas luces extendidas se conservan (§5.8).
-            if sesgo < 0 {
-                let clamp = CIFilter.colorClamp()
-                clamp.inputImage = imagen
-                clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
-                clamp.maxComponents = CIVector(x: 65504, y: 65504, z: 65504, w: 65504)
-                imagen = clamp.outputImage ?? imagen
-            }
+        if p.blancos != 0 {
+            imagen = ajusteBandaTonal(imagen,
+                                      ev: p.blancos / 100.0 * 1.1,
+                                      rampa: [PuntoCurva(x: 0, y: 0),
+                                              PuntoCurva(x: 0.7, y: 0),
+                                              PuntoCurva(x: 0.96, y: 1),
+                                              PuntoCurva(x: 1, y: 1)])
+        }
+        if p.negros != 0 {
+            imagen = ajusteBandaTonal(imagen,
+                                      ev: p.negros / 100.0 * 1.1,
+                                      rampa: [PuntoCurva(x: 0, y: 1),
+                                              PuntoCurva(x: 0.04, y: 1),
+                                              PuntoCurva(x: 0.3, y: 0),
+                                              PuntoCurva(x: 1, y: 0)])
         }
 
         // Contraste: curva S de verdad, con pivote en el gris medio y

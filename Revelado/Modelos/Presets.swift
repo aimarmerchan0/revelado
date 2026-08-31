@@ -11,19 +11,26 @@
 import Foundation
 import SwiftData
 
-/// Un preset guardado por el usuario.
+/// Un preset guardado por el usuario. Además de la receta, recuerda el tono
+/// medio de la foto donde se creó: así, al aplicarlo sobre una foto más
+/// clara u oscura, la exposición se adapta y el ESTILO cae igual.
 @Model
 final class PresetGuardado {
     @Attribute(.unique) var id: UUID
     var nombre: String
     var fechaCreacion: Date
     var parametrosJSON: Data
+    /// Luminosidad mediana (0...1) de la foto de referencia, o nil si no
+    /// se pudo medir al guardar.
+    var tonoMedioReferencia: Double?
 
-    init(nombre: String, parametros: ParametrosEdicion) {
+    init(nombre: String, parametros: ParametrosEdicion,
+         tonoMedioReferencia: Double? = nil) {
         self.id = UUID()
         self.nombre = nombre
         self.fechaCreacion = Date()
         self.parametrosJSON = (try? JSONEncoder().encode(parametros)) ?? Data()
+        self.tonoMedioReferencia = tonoMedioReferencia
     }
 
     var parametros: ParametrosEdicion? {
