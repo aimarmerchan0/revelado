@@ -20,6 +20,7 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import Vision
+import ImageIO
 
 /// Errores que el motor puede comunicar, con mensaje en claro.
 enum ErrorMotor: Error, LocalizedError {
@@ -232,6 +233,64 @@ final class MotorRevelado {
                                                to: destino,
                                                colorSpace: espacioSalidaPantalla,
                                                options: [:])
+    }
+
+    /// JPEG a calidad máxima con perfil incrustado (§5.7): para compartir
+    /// donde el HEIF o el TIFF no entran.
+    func exportarJPEG(imagen: CIImage, a destino: URL) throws {
+        try contexto.writeJPEGRepresentation(
+            of: imagen, to: destino,
+            colorSpace: espacioSalidaPantalla,
+            options: [kCGImageDestinationLossyCompressionQuality as CIImageRepresentationOption: 1.0])
+    }
+
+    // =========================================================================
+    // Metadatos EXIF del original: la ficha técnica de la toma.
+    // =========================================================================
+    func leerMetadatos(de url: URL) -> [(String, String)] {
+        guard let fuente = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let propiedades = CGImageSourceCopyPropertiesAtIndex(fuente, 0, nil)
+                as? [CFString: Any] else { return [] }
+
+        let exif = propiedades[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
+        let tiff = propiedades[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+
+        var filas: [(String, String)] = []
+
+        if let marca = tiff[kCGImagePropertyTIFFMake] as? String,
+           let modelo = tiff[kCGImagePropertyTIFFModel] as? String {
+            filas.append(("Cámara", "\(marca) \(modelo)"))
+        } else if let modelo = tiff[kCGImagePropertyTIFFModel] as? String {
+            filas.append(("Cámara", modelo))
+        }
+        if let lente = exif[kCGImagePropertyExifLensModel] as? String {
+            filas.append(("Objetivo", lente))
+        }
+        if let ancho = propiedades[kCGImagePropertyPixelWidth] as? Int,
+           let alto = propiedades[kCGImagePropertyPixelHeight] as? Int {
+            let megapixeles = Double(ancho * alto) / 1_000_000
+            filas.append(("Dimensiones",
+                          "\(ancho) × \(alto) (\(String(format: "%.1f", megapixeles)) Mpx)"))
+        }
+        if let isos = exif[kCGImagePropertyExifISOSpeedRatings] as? [Int],
+           let iso = isos.first {
+            filas.append(("ISO", "\(iso)"))
+        }
+        if let tiempo = exif[kCGImagePropertyExifExposureTime] as? Double, tiempo > 0 {
+            filas.append(("Obturación", tiempo >= 1
+                          ? String(format: "%.1f s", tiempo)
+                          : "1/\(Int((1 / tiempo).rounded())) s"))
+        }
+        if let apertura = exif[kCGImagePropertyExifFNumber] as? Double {
+            filas.append(("Diafragma", String(format: "f/%.1f", apertura)))
+        }
+        if let focal = exif[kCGImagePropertyExifFocalLength] as? Double {
+            filas.append(("Focal", String(format: "%.0f mm", focal)))
+        }
+        if let fecha = exif[kCGImagePropertyExifDateTimeOriginal] as? String {
+            filas.append(("Fecha de captura", fecha))
+        }
+        return filas
     }
 
     // =========================================================================
@@ -664,13 +723,75 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
-        // Viñeta, al final del todo: enmarca el resultado ya revelado.
+        // Quitar neblina: contraste local de radio muy grande, punto negro
+        // ligeramente abajo (el velo atmosférico levanta los negros) y una
+        // pizca de intensidad para devolver el color que la bruma lava.
+        if p.neblina > 0 {
+            let cantidad = CGFloat(p.neblina / 100.0)
+
+            let local = CIFilter.unsharpMask()
+            local.inputImage = imagen
+            local.radius = 140
+            local.intensity = Float(cantidad * 0.7)
+            imagen = local.outputImage ?? imagen
+
+            let velo = CIFilter.colorMatrix()
+            velo.inputImage = imagen
+            let ganancia = 1 + 0.08 * cantidad
+            velo.rVector = CIVector(x: ganancia, y: 0, z: 0, w: 0)
+            velo.gVector = CIVector(x: 0, y: ganancia, z: 0, w: 0)
+            velo.bVector = CIVector(x: 0, y: 0, z: ganancia, w: 0)
+            velo.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            velo.biasVector = CIVector(x: -0.035 * cantidad,
+                                       y: -0.035 * cantidad,
+                                       z: -0.035 * cantidad, w: 0)
+            imagen = velo.outputImage ?? imagen
+
+            let clamp = CIFilter.colorClamp()
+            clamp.inputImage = imagen
+            clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+            clamp.maxComponents = CIVector(x: 65504, y: 65504, z: 65504, w: 65504)
+            imagen = clamp.outputImage ?? imagen
+
+            let color = CIFilter.vibrance()
+            color.inputImage = imagen
+            color.amount = Float(cantidad * 0.15)
+            imagen = color.outputImage ?? imagen
+        }
+
+        // Viñeta: enmarca el resultado ya revelado.
         if p.vineta != 0 {
             let filtro = CIFilter.vignette()
             filtro.inputImage = imagen
             filtro.intensity = Float(p.vineta / 100.0)
             filtro.radius = 2
             imagen = filtro.outputImage ?? imagen
+        }
+
+        // Grano de película, lo último de todo: ruido monocromo estable
+        // (mismo patrón en cada render) fundido en luz suave.
+        if p.grano > 0 {
+            let intensidad = CGFloat(p.grano / 100.0) * 0.35
+            if let ruidoBruto = CIFilter.randomGenerator().outputImage {
+                let luma = CIVector(x: 1.0 / 3, y: 1.0 / 3, z: 1.0 / 3, w: 0)
+                let gris = CIFilter.colorMatrix()
+                // Grano algo más grueso que el píxel, como el de película.
+                gris.inputImage = ruidoBruto.transformed(by: .init(scaleX: 1.8, y: 1.8))
+                gris.rVector = CIVector(x: luma.x * intensidad, y: luma.y * intensidad, z: luma.z * intensidad, w: 0)
+                gris.gVector = gris.rVector
+                gris.bVector = gris.rVector
+                gris.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+                // Centrado en el gris medio: en luz suave, 0.5 = sin cambio.
+                let centro = 0.5 - intensidad / 2
+                gris.biasVector = CIVector(x: centro, y: centro, z: centro, w: 0)
+
+                if let granoListo = gris.outputImage?.cropped(to: imagen.extent) {
+                    let fusion = CIFilter.softLightBlendMode()
+                    fusion.inputImage = granoListo
+                    fusion.backgroundImage = imagen
+                    imagen = fusion.outputImage ?? imagen
+                }
+            }
         }
 
         return imagen

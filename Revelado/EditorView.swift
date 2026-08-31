@@ -63,6 +63,27 @@ struct EditorView: View {
     @State private var histograma: (r: [Float], v: [Float], a: [Float])? = nil
     @State private var mostrarHistograma = true
     @State private var tareaHistograma: Task<Void, Never>? = nil
+    @State private var recorteSombras = false
+    @State private var recorteLuces = false
+
+    // --- Zoom del visor ---
+    @State private var escalaZoom: CGFloat = 1
+    @State private var escalaZoomBase: CGFloat = 1
+    @State private var desplazamientoZoom: CGSize = .zero
+    @State private var desplazamientoZoomBase: CGSize = .zero
+
+    // --- Deshacer / rehacer ---
+    @State private var historial: [ParametrosEdicion] = []
+    @State private var futuro: [ParametrosEdicion] = []
+    @State private var aplicandoHistorial = false
+    @State private var ultimoRegistroHistorial = Date.distantPast
+
+    // --- Información EXIF ---
+    @State private var mostrarInformacion = false
+    @State private var metadatos: [(String, String)] = []
+
+    /// El panel activo se recuerda entre sesiones.
+    @AppStorage("panelActivoEditor") private var panelGuardado = Panel.luz.rawValue
 
     // --- Exportación ---
     @State private var exportando = false
@@ -100,15 +121,53 @@ struct EditorView: View {
             // ---- El visor ----
             ZStack(alignment: .topTrailing) {
                 GeometryReader { geo in
-                    VisorMetal(imagen: mostrandoOriginal ? (imagenOriginal ?? imagen) : imagen)
+                    VisorMetal(imagen: mostrandoOriginal ? (imagenOriginal ?? imagen) : imagen,
+                               escala: escalaZoom,
+                               desplazamiento: desplazamientoZoom)
                         .background(Color.black)
                         .contentShape(Rectangle())
+                        // Doble toque: ampliar al detalle / volver a encajar.
+                        .onTapGesture(count: 2) {
+                            if escalaZoom > 1 {
+                                escalaZoom = 1; escalaZoomBase = 1
+                                desplazamientoZoom = .zero; desplazamientoZoomBase = .zero
+                            } else {
+                                escalaZoom = 2.5; escalaZoomBase = 2.5
+                            }
+                        }
                         .onTapGesture(coordinateSpace: .local) { posicion in
-                            guard modoCuentagotas else { return }
+                            guard modoCuentagotas, escalaZoom == 1 else { return }
                             aplicarCuentagotas(en: posicion, tamanoVisor: geo.size)
                         }
+                        // Pellizco para ampliar; arrastre para moverse ampliado.
                         .gesture(
-                            modoCuentagotas ? nil :
+                            MagnificationGesture()
+                                .onChanged { valor in
+                                    escalaZoom = min(8, max(1, escalaZoomBase * valor))
+                                }
+                                .onEnded { _ in
+                                    escalaZoomBase = escalaZoom
+                                    if escalaZoom == 1 {
+                                        desplazamientoZoom = .zero
+                                        desplazamientoZoomBase = .zero
+                                    }
+                                }
+                        )
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 1)
+                                .onChanged { gesto in
+                                    guard escalaZoom > 1 else { return }
+                                    desplazamientoZoom = CGSize(
+                                        width: desplazamientoZoomBase.width + gesto.translation.width,
+                                        height: desplazamientoZoomBase.height + gesto.translation.height)
+                                }
+                                .onEnded { _ in
+                                    desplazamientoZoomBase = desplazamientoZoom
+                                }
+                        )
+                        // Antes/después manteniendo pulsado (solo sin zoom).
+                        .gesture(
+                            (modoCuentagotas || escalaZoom > 1) ? nil :
                             LongPressGesture(minimumDuration: 0.2)
                                 .sequenced(before: DragGesture(minimumDistance: 0))
                                 .onChanged { valor in
@@ -119,7 +178,9 @@ struct EditorView: View {
                 }
 
                 if let histograma, mostrarHistograma, !mostrandoOriginal {
-                    VistaHistograma(r: histograma.r, v: histograma.v, a: histograma.a)
+                    VistaHistograma(r: histograma.r, v: histograma.v, a: histograma.a,
+                                    recorteSombras: recorteSombras,
+                                    recorteLuces: recorteLuces)
                         .padding(10)
                         .onTapGesture { withAnimation(.snappy) { mostrarHistograma = false } }
                 }
@@ -166,7 +227,38 @@ struct EditorView: View {
         .navigationTitle(foto.nombreOriginal)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItemGroup(placement: .topBarLeading) {
+                Button {
+                    deshacer()
+                } label: {
+                    Label("Deshacer", systemImage: "arrow.uturn.backward")
+                }
+                .disabled(historial.isEmpty)
+
+                Button {
+                    rehacer()
+                } label: {
+                    Label("Rehacer", systemImage: "arrow.uturn.forward")
+                }
+                .disabled(futuro.isEmpty)
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                // Antes/después fijo, además del gesto de mantener pulsado.
+                Button {
+                    mostrandoOriginal.toggle()
+                } label: {
+                    Label("Antes y después", systemImage: "square.split.2x1")
+                }
+                .symbolVariant(mostrandoOriginal ? .fill : .none)
+
+                Button {
+                    metadatos = (try? Biblioteca.urlOriginal(de: foto))
+                        .map { MotorRevelado.compartido.leerMetadatos(de: $0) } ?? []
+                    mostrarInformacion = true
+                } label: {
+                    Label("Información", systemImage: "info.circle")
+                }
+
                 Button {
                     withAnimation(.snappy) { mostrarHistograma.toggle() }
                 } label: {
@@ -219,10 +311,41 @@ struct EditorView: View {
             }
         }
         .task { await cargar() }
-        .onChange(of: parametros) { _, _ in
+        .onAppear {
+            panel = Panel(rawValue: panelGuardado) ?? .luz
+        }
+        .onChange(of: panel) { _, nuevo in
+            panelGuardado = nuevo.rawValue
+        }
+        .onDisappear {
+            actualizarMiniatura()
+        }
+        .onChange(of: parametros) { anterior, _ in
             guard cargada else { return }
+            registrarEnHistorial(anterior)
             recalcular()
             guardar()
+        }
+        .sheet(isPresented: $mostrarInformacion) {
+            NavigationStack {
+                List {
+                    if metadatos.isEmpty {
+                        Text("Este archivo no trae metadatos legibles.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(metadatos, id: \.0) { fila in
+                        LabeledContent(fila.0, value: fila.1)
+                    }
+                }
+                .navigationTitle("Información")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Cerrar") { mostrarInformacion = false }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
         }
         .alert("Exportación", isPresented: hayAviso) {
             Button("De acuerdo", role: .cancel) { avisoExportacion = nil }
@@ -630,7 +753,9 @@ struct EditorView: View {
     @ViewBuilder private var panelEfectos: some View {
         FilaAjuste("Textura", valor: $parametros.textura)
         FilaAjuste("Claridad", valor: $parametros.claridad)
+        FilaAjuste("Quitar neblina", valor: $parametros.neblina, rango: 0...100)
         FilaAjuste("Viñeta", valor: $parametros.vineta)
+        FilaAjuste("Grano", valor: $parametros.grano, rango: 0...100)
     }
 
     // ---- Detalle ----
@@ -942,7 +1067,17 @@ struct EditorView: View {
                 MotorRevelado.compartido.calcularHistograma(de: imagen)
             }.value
             if !Task.isCancelled, let resultado {
-                await MainActor.run { histograma = resultado }
+                await MainActor.run {
+                    histograma = resultado
+                    // Avisos de recorte: peso anormal en el primer/último
+                    // escalón del histograma = negros empastados / quemados.
+                    recorteSombras = max(resultado.r.first ?? 0,
+                                         resultado.v.first ?? 0,
+                                         resultado.a.first ?? 0) > 0.6
+                    recorteLuces = max(resultado.r.last ?? 0,
+                                       resultado.v.last ?? 0,
+                                       resultado.a.last ?? 0) > 0.6
+                }
             }
         }
     }
@@ -951,6 +1086,63 @@ struct EditorView: View {
         foto.parametrosJSON = parametros.esNeutro
             ? nil
             : try? JSONEncoder().encode(parametros)
+    }
+
+    // =========================================================================
+    // Deshacer / rehacer: cada pausa en la edición deja una instantánea.
+    // Los cambios seguidos del mismo arrastre se agrupan en una sola.
+    // =========================================================================
+    private func registrarEnHistorial(_ estadoAnterior: ParametrosEdicion) {
+        guard !aplicandoHistorial else { return }
+        futuro.removeAll()
+        let ahora = Date()
+        if ahora.timeIntervalSince(ultimoRegistroHistorial) > 0.8 {
+            historial.append(estadoAnterior)
+            if historial.count > 60 { historial.removeFirst() }
+        }
+        ultimoRegistroHistorial = ahora
+    }
+
+    private func deshacer() {
+        guard let anterior = historial.popLast() else { return }
+        futuro.append(parametros)
+        aplicandoHistorial = true
+        withAnimation(.snappy) { parametros = anterior }
+        recalcular()
+        guardar()
+        aplicandoHistorial = false
+    }
+
+    private func rehacer() {
+        guard let siguiente = futuro.popLast() else { return }
+        historial.append(parametros)
+        aplicandoHistorial = true
+        withAnimation(.snappy) { parametros = siguiente }
+        recalcular()
+        guardar()
+        aplicandoHistorial = false
+    }
+
+    /// Al salir del editor, la miniatura de la galería se regenera con la
+    /// edición aplicada: la biblioteca enseña las fotos como las dejaste.
+    private func actualizarMiniatura() {
+        guard let imagen else { return }
+        let motor = MotorRevelado.compartido
+        Task.detached(priority: .utility) {
+            let lado = Biblioteca.ladoMiniatura
+            let extension_ = imagen.extent
+            let ladoLargo = max(extension_.width, extension_.height)
+            guard ladoLargo > 0 else { return }
+            let factor = min(1, lado / ladoLargo)
+            let pequena = imagen.transformed(by: .init(scaleX: factor, y: factor))
+            guard let cg = motor.contexto.createCGImage(
+                pequena, from: pequena.extent, format: .RGBA8,
+                colorSpace: motor.espacioSalidaPantalla) else { return }
+            let datos = UIImage(cgImage: cg).jpegData(compressionQuality: 0.85)
+            await MainActor.run {
+                if let datos { foto.miniatura = datos }
+            }
+        }
     }
 
     // =========================================================================
@@ -1108,8 +1300,23 @@ struct FilaAjuste: View {
                                   y: geo.size.height / 2)
                 }
                 .contentShape(Rectangle())
+                // Doble toque en el medidor: a cero (como en los editores
+                // profesionales). Toque simple: saltar a ese valor exacto.
+                // El arrastre necesita moverse 2 pt para arrancar, así los
+                // toques nunca quedan atrapados por él.
+                .onTapGesture(count: 2) {
+                    withAnimation(.snappy) { valor = 0 }
+                }
+                .onTapGesture(coordinateSpace: .local) { posicion in
+                    let f = min(1, max(0, (posicion.x - 11) / max(1, ancho - 22)))
+                    let nuevo = (rango.lowerBound
+                        + f * (rango.upperBound - rango.lowerBound))
+                    withAnimation(.snappy) {
+                        valor = (nuevo / paso).rounded() * paso
+                    }
+                }
                 .gesture(
-                    DragGesture(minimumDistance: 0)
+                    DragGesture(minimumDistance: 2)
                         .onChanged { gesto in
                             let f = min(1, max(0, (gesto.location.x - 11) / max(1, ancho - 22)))
                             let nuevo = (rango.lowerBound
@@ -1122,9 +1329,6 @@ struct FilaAjuste: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            withAnimation(.snappy) { valor = 0 }
-        }
         .sensoryFeedback(.selection, trigger: valor == 0) { _, ahoraEnCero in
             ahoraEnCero != estabaEnCero
         }

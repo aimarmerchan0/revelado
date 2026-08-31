@@ -13,12 +13,34 @@ struct VistaHistograma: View {
     let r: [Float]
     let v: [Float]
     let a: [Float]
+    /// Avisos de recorte: hay negros empastados / luces quemadas.
+    var recorteSombras: Bool = false
+    var recorteLuces: Bool = false
 
     var body: some View {
-        ZStack {
-            silueta(a, color: .blue)
-            silueta(v, color: .green)
-            silueta(r, color: .red)
+        ZStack(alignment: .top) {
+            ZStack {
+                silueta(a, color: .blue)
+                silueta(v, color: .green)
+                silueta(r, color: .red)
+            }
+
+            // Los avisos de recorte, como los triángulos de una cámara:
+            // azul a la izquierda (negros empastados), rojo a la derecha
+            // (luces quemadas).
+            HStack {
+                if recorteSombras {
+                    Image(systemName: "arrowtriangle.left.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.blue)
+                }
+                Spacer()
+                if recorteLuces {
+                    Image(systemName: "arrowtriangle.right.fill")
+                        .font(.system(size: 8))
+                        .foregroundStyle(.red)
+                }
+            }
         }
         .frame(width: 132, height: 72)
         .padding(6)

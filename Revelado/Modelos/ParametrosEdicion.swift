@@ -77,6 +77,8 @@ struct ParametrosEdicion: Codable, Equatable {
     var textura: Double = 0
     var claridad: Double = 0
     var vineta: Double = 0          // negativo oscurece bordes, positivo aclara
+    var neblina: Double = 0         // 0...100: quitar velo atmosférico
+    var grano: Double = 0           // 0...100: grano de película
 
     // --- Detalle ---
     var enfoque: Double = 0         // 0...100
@@ -126,7 +128,7 @@ struct ParametrosEdicion: Codable, Equatable {
         case curvaLuma, curvaR, curvaV, curvaA
         case temperatura, matiz, puntoNeutroX, puntoNeutroY, neutroR, neutroG, neutroB
         case intensidad, saturacion, hsl
-        case textura, claridad, vineta
+        case textura, claridad, vineta, neblina, grano
         case enfoque, reduccionRuido, reduccionRuidoColor
         case realceSujeto, realceFondo, saturacionSujeto, saturacionFondo
         case luzCielo, saturacionCielo, luzVerdes, saturacionVerdes
@@ -162,6 +164,8 @@ struct ParametrosEdicion: Codable, Equatable {
         textura = try c.decodeIfPresent(Double.self, forKey: .textura) ?? 0
         claridad = try c.decodeIfPresent(Double.self, forKey: .claridad) ?? 0
         vineta = try c.decodeIfPresent(Double.self, forKey: .vineta) ?? 0
+        neblina = try c.decodeIfPresent(Double.self, forKey: .neblina) ?? 0
+        grano = try c.decodeIfPresent(Double.self, forKey: .grano) ?? 0
         enfoque = try c.decodeIfPresent(Double.self, forKey: .enfoque) ?? 0
         reduccionRuido = try c.decodeIfPresent(Double.self, forKey: .reduccionRuido) ?? 0
         reduccionRuidoColor = try c.decodeIfPresent(Double.self, forKey: .reduccionRuidoColor) ?? 0
@@ -199,5 +203,7 @@ struct ParametrosEdicion: Codable, Equatable {
         textura = look.textura
         claridad = look.claridad
         vineta = look.vineta
+        neblina = look.neblina
+        grano = look.grano
     }
 }

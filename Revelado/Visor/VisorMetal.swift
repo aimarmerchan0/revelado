@@ -20,6 +20,10 @@ struct VisorMetal: UIViewRepresentable {
 
     /// La imagen revelada a mostrar. Si es nil, el visor se queda en negro.
     let imagen: CIImage?
+    /// Zoom del visor: 1 = foto encajada entera; >1 = ampliada.
+    var escala: CGFloat = 1
+    /// Desplazamiento al estar ampliada, en puntos de pantalla.
+    var desplazamiento: CGSize = .zero
 
     func makeCoordinator() -> Dibujante {
         Dibujante()
@@ -51,9 +55,11 @@ struct VisorMetal: UIViewRepresentable {
         return vista
     }
 
-    /// Se llama cada vez que SwiftUI detecta que la imagen cambió.
+    /// Se llama cada vez que SwiftUI detecta que la imagen o el zoom cambian.
     func updateUIView(_ vista: MTKView, context: Context) {
         context.coordinator.imagen = imagen
+        context.coordinator.escala = escala
+        context.coordinator.desplazamiento = desplazamiento
         vista.setNeedsDisplay()
     }
 
@@ -64,6 +70,9 @@ struct VisorMetal: UIViewRepresentable {
 
         /// La imagen actual (la "receta" de Core Image, aún sin renderizar).
         var imagen: CIImage?
+        /// Zoom y desplazamiento actuales (los fija updateUIView).
+        var escala: CGFloat = 1
+        var desplazamiento: CGSize = .zero
 
         /// La cola de órdenes hacia la GPU.
         private lazy var colaComandos: MTLCommandQueue? =
@@ -87,18 +96,37 @@ struct VisorMetal: UIViewRepresentable {
             // Como colocar el fotograma bajo la lupa: se reduce lo justo para
             // que quepa completo, sin deformarlo, y se centra.
             let extension_ = imagen.extent
-            let escala = min(tamanoLienzo.width / extension_.width,
-                             tamanoLienzo.height / extension_.height)
-            let imagenEncajada = imagen
+            let escalaEncaje = min(tamanoLienzo.width / extension_.width,
+                                   tamanoLienzo.height / extension_.height)
+            var imagenEncajada = imagen
                 // Llevar la esquina de la imagen al origen (0,0)...
                 .transformed(by: .init(translationX: -extension_.origin.x,
                                        y: -extension_.origin.y))
                 // ...reducirla para que quepa...
-                .transformed(by: .init(scaleX: escala, y: escala))
+                .transformed(by: .init(scaleX: escalaEncaje, y: escalaEncaje))
                 // ...y centrarla en el lienzo.
                 .transformed(by: .init(
-                    translationX: (tamanoLienzo.width - extension_.width * escala) / 2,
-                    y: (tamanoLienzo.height - extension_.height * escala) / 2))
+                    translationX: (tamanoLienzo.width - extension_.width * escalaEncaje) / 2,
+                    y: (tamanoLienzo.height - extension_.height * escalaEncaje) / 2))
+
+            // Zoom del usuario: ampliar alrededor del centro del lienzo y
+            // aplicar el desplazamiento (convertido de puntos de pantalla a
+            // píxeles del lienzo; el eje Y de pantalla va al revés que el
+            // de la imagen).
+            if escala > 1 {
+                let centroX = tamanoLienzo.width / 2
+                let centroY = tamanoLienzo.height / 2
+                let factorPantalla = view.bounds.width > 0
+                    ? tamanoLienzo.width / view.bounds.width
+                    : 1
+                imagenEncajada = imagenEncajada
+                    .transformed(by: CGAffineTransform(translationX: centroX, y: centroY)
+                        .scaledBy(x: escala, y: escala)
+                        .translatedBy(x: -centroX, y: -centroY))
+                    .transformed(by: .init(
+                        translationX: desplazamiento.width * factorPantalla,
+                        y: -desplazamiento.height * factorPantalla))
+            }
 
             // --- Render único (§5.4): toda la cadena, una sola pasada ---
             // El destino es directamente la textura de pantalla, en el formato

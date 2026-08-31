@@ -269,6 +269,17 @@ private struct CeldaFoto: View {
                 .foregroundStyle(.white)
                 .padding(4)
         }
+        // Distintivo de "editada": el lápiz arriba a la derecha.
+        .overlay(alignment: .topTrailing) {
+            if foto.parametrosJSON != nil {
+                Image(systemName: "pencil")
+                    .font(.caption2.bold())
+                    .padding(4)
+                    .background(.black.opacity(0.65), in: Circle())
+                    .foregroundStyle(.white)
+                    .padding(4)
+            }
+        }
         .contentShape(Rectangle())
     }
 }
