@@ -25,10 +25,22 @@ struct EditorView: View {
     /// Los valores con los que el revelador abrió el RAW (el punto cero).
     @State private var basesRAW: MotorRevelado.BasesRAW? = nil
     @State private var imagenBase: CIImage? = nil
-    /// Máscara del sujeto detectado por la IA del dispositivo (se calcula
-    /// una vez por foto, en segundo plano).
-    @State private var mascaraSujeto: CIImage? = nil
-    @State private var buscandoSujeto = false
+    /// Máscaras de selección (sujeto por IA, cielo y verdes por análisis),
+    /// calculadas una vez por foto, en segundo plano.
+    @State private var mascaras = MotorRevelado.Mascaras()
+    @State private var buscandoSelecciones = false
+    @State private var seleccionesListas = false
+
+    /// Portapapeles de ajustes, compartido entre fotos durante la sesión.
+    static var recetaCopiada: ParametrosEdicion? = nil
+
+    /// Modo inteligente de presets: aplicar un look ejecuta también el Auto.
+    @State private var presetsInteligentes = true
+    @State private var nombreNuevoPreset = ""
+    @State private var pidiendoNombrePreset = false
+    @Environment(\.modelContext) private var contextoDatos
+    @Query(sort: \PresetGuardado.fechaCreacion, order: .reverse)
+    private var presetsGuardados: [PresetGuardado]
     @State private var imagen: CIImage? = nil
     @State private var mensajeError: String? = nil
     @State private var cargada = false
@@ -58,18 +70,20 @@ struct EditorView: View {
 
     /// Los cinco paneles.
     enum Panel: String, CaseIterable, Identifiable {
+        case presets = "Presets"
         case luz = "Luz"
         case color = "Color"
-        case sujeto = "Sujeto"
+        case selecciones = "Selección"
         case efectos = "Efectos"
         case detalle = "Detalle"
         case recortar = "Recortar"
         var id: String { rawValue }
         var simbolo: String {
             switch self {
+            case .presets: return "square.stack.3d.up"
             case .luz: return "sun.max"
             case .color: return "paintpalette"
-            case .sujeto: return "sparkles"
+            case .selecciones: return "sparkles"
             case .efectos: return "wand.and.stars"
             case .detalle: return "triangle"
             case .recortar: return "crop.rotate"
@@ -167,17 +181,35 @@ struct EditorView: View {
                 .disabled(parametros.esNeutro)
 
                 Menu {
-                    Button {
-                        Task { await exportarAFotos() }
-                    } label: {
-                        Label("Guardar en Fotos (HEIF 10 bits)",
-                              systemImage: "photo.badge.arrow.down")
+                    Section {
+                        Button {
+                            Task { await exportarAFotos() }
+                        } label: {
+                            Label("Guardar en Fotos (HEIF 10 bits)",
+                                  systemImage: "photo.badge.arrow.down")
+                        }
+                        Button {
+                            Task { await compartirTIFF() }
+                        } label: {
+                            Label("Compartir TIFF de 16 bits",
+                                  systemImage: "square.and.arrow.up")
+                        }
                     }
-                    Button {
-                        Task { await compartirTIFF() }
-                    } label: {
-                        Label("Compartir TIFF de 16 bits",
-                              systemImage: "square.and.arrow.up")
+                    Section {
+                        Button {
+                            Self.recetaCopiada = parametros
+                        } label: {
+                            Label("Copiar ajustes", systemImage: "doc.on.doc")
+                        }
+                        .disabled(parametros.esNeutro)
+                        Button {
+                            if let receta = Self.recetaCopiada {
+                                withAnimation(.snappy) { parametros = receta }
+                            }
+                        } label: {
+                            Label("Pegar ajustes", systemImage: "doc.on.clipboard")
+                        }
+                        .disabled(Self.recetaCopiada == nil)
                     }
                 } label: {
                     Label("Exportar", systemImage: "square.and.arrow.up")
@@ -195,6 +227,13 @@ struct EditorView: View {
             Button("De acuerdo", role: .cancel) { avisoExportacion = nil }
         } message: {
             Text(avisoExportacion ?? "")
+        }
+        .alert("Guardar preset", isPresented: $pidiendoNombrePreset) {
+            TextField("Nombre del preset", text: $nombreNuevoPreset)
+            Button("Guardar") { guardarPresetNuevo() }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("La edición actual (tono, color, curva, mezclador y efectos) se guardará con este nombre.")
         }
         .sheet(item: $tiffParaCompartir) { archivo in
             HojaCompartir(url: archivo.url)
@@ -253,9 +292,10 @@ struct EditorView: View {
             ScrollView {
                 VStack(spacing: 2) {
                     switch panel {
+                    case .presets: panelPresets
                     case .luz: panelLuz
                     case .color: panelColor
-                    case .sujeto: panelSujeto
+                    case .selecciones: panelSelecciones
                     case .efectos: panelEfectos
                     case .detalle: panelDetalle
                     case .recortar: panelRecortar
@@ -309,10 +349,10 @@ struct EditorView: View {
     // ---- Color ----
     @ViewBuilder private var panelColor: some View {
         cabeceraBalanceBlancos
-        FilaAjuste("Temperatura", valor: $parametros.temperatura)
-        FilaAjuste("Matiz", valor: $parametros.matiz)
-        FilaAjuste("Intensidad", valor: $parametros.intensidad)
-        FilaAjuste("Saturación", valor: $parametros.saturacion)
+        FilaAjuste("Temperatura", valor: $parametros.temperatura, estilo: .temperatura)
+        FilaAjuste("Matiz", valor: $parametros.matiz, estilo: .matiz)
+        FilaAjuste("Intensidad", valor: $parametros.intensidad, estilo: .saturacion)
+        FilaAjuste("Saturación", valor: $parametros.saturacion, estilo: .saturacion)
         mezcladorColor
     }
 
@@ -366,32 +406,159 @@ struct EditorView: View {
         return Color(red: r, green: g, blue: b)
     }
 
-    // ---- Sujeto (IA en el dispositivo) ----
-    @ViewBuilder private var panelSujeto: some View {
-        if buscandoSujeto {
+    // ---- Presets ----
+    @ViewBuilder private var panelPresets: some View {
+        HStack {
+            Toggle(isOn: $presetsInteligentes) {
+                Label("Inteligente", systemImage: "wand.and.sparkles")
+                    .font(.footnote)
+            }
+            .toggleStyle(.button)
+            .buttonStyle(.bordered)
+            .tint(presetsInteligentes ? Color.accentColor : .secondary)
+
+            Spacer()
+
+            Button {
+                nombreNuevoPreset = ""
+                pidiendoNombrePreset = true
+            } label: {
+                Label("Guardar preset", systemImage: "plus.square.on.square")
+                    .font(.footnote)
+            }
+            .buttonStyle(.bordered)
+            .disabled(parametros.esNeutro)
+        }
+        .padding(.top, 8)
+
+        Text(presetsInteligentes
+             ? "Con Inteligente activado, cada look se combina con el Auto: primero se mide la foto y después se aplica el estilo."
+             : "El look se aplica tal cual, sin medir la foto.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Looks.integrados) { look in
+                    Button {
+                        aplicarLook(look.receta)
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: look.simbolo)
+                                .font(.system(size: 18))
+                            Text(look.nombre)
+                                .font(.caption2)
+                                .lineLimit(1)
+                        }
+                        .frame(width: 84, height: 56)
+                        .background(Color.white.opacity(0.06),
+                                    in: RoundedRectangle(cornerRadius: 10))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.vertical, 8)
+        }
+
+        if !presetsGuardados.isEmpty {
+            Text("Mis presets")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+
+            ForEach(presetsGuardados) { preset in
+                HStack {
+                    Button {
+                        if let receta = preset.parametros {
+                            aplicarLook(receta)
+                        }
+                    } label: {
+                        Label(preset.nombre, systemImage: "square.stack.3d.up")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(role: .destructive) {
+                        contextoDatos.delete(preset)
+                    } label: {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private func aplicarLook(_ receta: ParametrosEdicion) {
+        withAnimation(.snappy) {
+            parametros.fusionarLook(receta)
+        }
+        if presetsInteligentes {
+            aplicarAuto(preservandoLook: true)
+        }
+    }
+
+    private func guardarPresetNuevo() {
+        let nombre = nombreNuevoPreset.trimmingCharacters(in: .whitespaces)
+        guard !nombre.isEmpty else { return }
+        contextoDatos.insert(PresetGuardado(nombre: nombre, parametros: parametros))
+    }
+
+    // ---- Selecciones (IA y análisis en el dispositivo) ----
+    @ViewBuilder private var panelSelecciones: some View {
+        if buscandoSelecciones {
             HStack(spacing: 8) {
                 ProgressView()
-                Text("Buscando el sujeto…")
+                Text("Analizando la foto (sujeto, cielo, vegetación)…")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 12)
-        } else if mascaraSujeto == nil {
-            ContentUnavailableView("Sin sujeto detectado",
+        } else if mascaras.sujeto == nil && mascaras.cielo == nil
+                    && mascaras.vegetacion == nil {
+            ContentUnavailableView("Sin zonas detectadas",
                                    systemImage: "person.crop.rectangle.badge.plus",
-                                   description: Text("La detección funciona mejor con personas, animales u objetos destacados sobre el fondo."))
+                                   description: Text("No se encontró sujeto, cielo ni vegetación en esta foto. Todo el análisis ocurre en tu iPhone."))
                 .frame(height: 180)
         } else {
-            Text("Sujeto detectado. La luz del sujeto y la del fondo se ajustan por separado; la detección ocurre solo en tu iPhone.")
-                .font(.footnote)
+            Text("Zonas detectadas en tu iPhone. Cada una se ajusta por separado; el resto de la foto no se toca.")
+                .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 10)
 
-            FilaAjuste("Luz del sujeto", valor: $parametros.realceSujeto)
-            FilaAjuste("Luz del fondo", valor: $parametros.realceFondo)
+            if mascaras.sujeto != nil {
+                seccionSeleccion("Sujeto", simbolo: "person.fill")
+                FilaAjuste("Luz", valor: $parametros.realceSujeto)
+                FilaAjuste("Saturación", valor: $parametros.saturacionSujeto, estilo: .saturacion)
+                seccionSeleccion("Fondo", simbolo: "person.and.background.dotted")
+                FilaAjuste("Luz", valor: $parametros.realceFondo)
+                FilaAjuste("Saturación", valor: $parametros.saturacionFondo, estilo: .saturacion)
+            }
+            if mascaras.cielo != nil {
+                seccionSeleccion("Cielo", simbolo: "cloud.sun.fill")
+                FilaAjuste("Luz", valor: $parametros.luzCielo)
+                FilaAjuste("Saturación", valor: $parametros.saturacionCielo, estilo: .saturacion)
+            }
+            if mascaras.vegetacion != nil {
+                seccionSeleccion("Vegetación", simbolo: "leaf.fill")
+                FilaAjuste("Luz", valor: $parametros.luzVerdes)
+                FilaAjuste("Saturación", valor: $parametros.saturacionVerdes, estilo: .saturacion)
+            }
         }
+    }
+
+    private func seccionSeleccion(_ nombre: String, simbolo: String) -> some View {
+        Label(nombre, systemImage: simbolo)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
     }
 
     // ---- Efectos ----
@@ -542,10 +709,13 @@ struct EditorView: View {
         }
     }
 
-    /// Auto: el fotómetro matricial de la app. Lee sombras, medios y luces
-    /// (percentiles 5, 50 y 95) del original y coloca exposición, negros,
-    /// blancos y contraste como punto de partida razonable.
-    private func aplicarAuto() {
+    /// Auto profesional: mide el histograma completo del original y coloca
+    /// los ajustes vigilando SIEMPRE los dos extremos — que no queden zonas
+    /// negras empastadas ni luces quemadas después de la corrección.
+    /// `preservandoLook` = true cuando se ejecuta como parte de un preset
+    /// inteligente: entonces respeta el estilo (contraste, curva, color) y
+    /// solo coloca la exposición y la protección de extremos.
+    private func aplicarAuto(preservandoLook: Bool = false) {
         guard let original = imagenOriginal else { return }
         Task {
             let estadisticas = await Task.detached(priority: .userInitiated) {
@@ -554,15 +724,45 @@ struct EditorView: View {
             guard let estadisticas else { return }
             await MainActor.run {
                 withAnimation(.snappy) {
-                    // Medios al gris medio fotográfico.
+                    // 1) Medios al gris medio fotográfico.
                     let medios = max(0.02, estadisticas.p50)
-                    parametros.exposicion = min(2.5, max(-2.5, log2(0.42 / medios)))
-                        .redondeadoAPaso(0.05)
-                    // Sombras levantadas → bajar negros; luces cortas → abrir blancos.
-                    parametros.negros = -min(30, estadisticas.p05 * 300).rounded()
-                    parametros.blancos = min(30, (1 - estadisticas.p95) * 250).rounded()
-                    if parametros.contraste == 0 { parametros.contraste = 12 }
-                    if parametros.sombras == 0 { parametros.sombras = 10 }
+                    var exposicion = min(2.5, max(-2.5, log2(0.42 / medios)))
+
+                    // 2) Protección de altas luces: predecir dónde quedará el
+                    // 1% más luminoso tras la exposición. Si se quema, primero
+                    // se recorta la subida y después se recupera con el
+                    // control de altas luces.
+                    let lucesPrevistas = min(1.5, estadisticas.p99 * pow(2, exposicion))
+                    if lucesPrevistas > 0.96 {
+                        let exceso = lucesPrevistas - 0.96
+                        exposicion -= min(0.8, exceso * 1.5)
+                        parametros.altasLuces = -min(75, (exceso * 260).rounded())
+                    } else if !preservandoLook {
+                        parametros.altasLuces = 0
+                    }
+
+                    // 3) Protección de sombras: que el 1% más oscuro no quede
+                    // empastado en negro puro tras la corrección.
+                    let sombrasPrevistas = estadisticas.p01 * pow(2, exposicion)
+                    if sombrasPrevistas < 0.015 {
+                        parametros.sombras = max(parametros.sombras,
+                                                 min(60, ((0.015 - sombrasPrevistas) * 3500).rounded()))
+                        parametros.negros = max(parametros.negros, 6)
+                    } else if !preservandoLook {
+                        // Sombras ya sanas: negros al punto justo, sin empastar.
+                        parametros.negros = -min(20, (estadisticas.p05 * 220).rounded())
+                        parametros.sombras = 8
+                    }
+
+                    // 4) Blancos: aprovechar el rango si las luces van cortas.
+                    if !preservandoLook {
+                        parametros.blancos = lucesPrevistas < 0.85
+                            ? min(28, ((0.95 - lucesPrevistas) * 180).rounded())
+                            : 0
+                        if parametros.contraste == 0 { parametros.contraste = 12 }
+                    }
+
+                    parametros.exposicion = exposicion.redondeadoAPaso(0.05)
                 }
             }
         }
@@ -601,7 +801,7 @@ struct EditorView: View {
 
             cargada = true
             recalcular()
-            buscarSujeto()
+            buscarSelecciones()
         } catch {
             mensajeError = error.localizedDescription
         }
@@ -634,25 +834,31 @@ struct EditorView: View {
 
         imagen = motor.aplicarAjustes(a: base, parametros: parametros,
                                       cuboHSL: cuboHSL,
-                                      mascaraSujeto: mascaraSujeto,
+                                      mascaras: mascaras,
                                       decodificadoRAW: foto.esRAW)
         actualizarHistograma()
     }
 
-    /// Lanza la detección de sujeto en segundo plano (una vez por foto).
-    private func buscarSujeto() {
-        guard mascaraSujeto == nil, !buscandoSujeto,
+    /// Lanza la detección de zonas en segundo plano (una vez por foto):
+    /// sujeto con la IA de Vision, cielo y vegetación por análisis de color.
+    private func buscarSelecciones() {
+        guard !seleccionesListas, !buscandoSelecciones,
               let original = imagenOriginal else { return }
-        buscandoSujeto = true
+        buscandoSelecciones = true
         Task {
-            let mascara = await Task.detached(priority: .utility) {
-                MotorRevelado.compartido.mascaraSujeto(de: original)
+            let resultado = await Task.detached(priority: .utility) {
+                let motor = MotorRevelado.compartido
+                return MotorRevelado.Mascaras(
+                    sujeto: motor.mascaraSujeto(de: original),
+                    cielo: motor.mascaraHeuristica(de: original, zona: .cielo),
+                    vegetacion: motor.mascaraHeuristica(de: original, zona: .vegetacion))
             }.value
             await MainActor.run {
-                mascaraSujeto = mascara
-                buscandoSujeto = false
-                // Si la receta guardada ya usaba el reiluminado, aplicarlo.
-                if parametros.realceSujeto != 0 || parametros.realceFondo != 0 {
+                mascaras = resultado
+                buscandoSelecciones = false
+                seleccionesListas = true
+                // Si la receta guardada ya usaba selecciones, aplicarlas.
+                if parametros.usaSelecciones {
                     recalcular()
                 }
             }
@@ -752,27 +958,52 @@ struct EditorView: View {
 // Piezas reutilizables
 // =============================================================================
 
-/// Una fila de ajuste: nombre y valor arriba, deslizador a ancho completo.
-/// Doble toque en el valor: ese ajuste vuelve a cero.
+/// Una fila de ajuste: nombre y valor arriba y, debajo, el medidor — una
+/// barra a ancho completo que se rellena desde el centro (o desde la
+/// izquierda si el ajuste solo crece), con pistas de color en los controles
+/// que lo piden: azul→ámbar en temperatura, verde→magenta en matiz, y
+/// gris→color en las saturaciones. Doble toque en cualquier parte de la
+/// fila: el ajuste vuelve a cero. Vibración sutil al pasar por el cero.
 struct FilaAjuste: View {
+    /// La pista de color del medidor.
+    enum Estilo {
+        case neutro        // relleno ámbar de acento
+        case temperatura   // azul (frío) → ámbar (cálido)
+        case matiz         // verde → magenta
+        case saturacion    // gris → color
+    }
+
     let nombre: String
     @Binding var valor: Double
     var rango: ClosedRange<Double> = -100...100
     var paso: Double = 1
     var decimales: Int = 0
+    var estilo: Estilo = .neutro
+
+    /// Para la vibración al cruzar el cero.
+    @State private var estabaEnCero = true
 
     init(_ nombre: String, valor: Binding<Double>,
          rango: ClosedRange<Double> = -100...100,
-         paso: Double = 1, decimales: Int = 0) {
+         paso: Double = 1, decimales: Int = 0,
+         estilo: Estilo = .neutro) {
         self.nombre = nombre
         self._valor = valor
         self.rango = rango
         self.paso = paso
         self.decimales = decimales
+        self.estilo = estilo
+    }
+
+    /// true si el rango arranca en 0: la barra se rellena desde la izquierda.
+    private var esMonopolar: Bool { rango.lowerBound == 0 }
+
+    private var fraccion: Double {
+        (valor - rango.lowerBound) / (rango.upperBound - rango.lowerBound)
     }
 
     var body: some View {
-        VStack(spacing: 2) {
+        VStack(spacing: 5) {
             HStack {
                 Text(nombre)
                     .font(.subheadline)
@@ -782,15 +1013,110 @@ struct FilaAjuste: View {
                     .font(.subheadline.weight(.medium).monospacedDigit())
                     .foregroundStyle(valor == 0 ? .secondary : Color.accentColor)
                     .contentTransition(.numericText())
-                    .onTapGesture(count: 2) {
-                        withAnimation(.snappy) { valor = 0 }
-                    }
-                    .accessibilityLabel("\(nombre): \(valor.formatted())")
-                    .accessibilityHint("Doble toque para poner a cero")
             }
-            Slider(value: $valor, in: rango, step: paso)
+
+            GeometryReader { geo in
+                let ancho = geo.size.width
+                ZStack(alignment: .leading) {
+                    // La pista.
+                    Capsule()
+                        .fill(colorPista)
+                        .frame(height: 6)
+
+                    // Marca del centro en los ajustes bipolares.
+                    if !esMonopolar {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.35))
+                            .frame(width: 1.5, height: 12)
+                            .position(x: ancho / 2, y: geo.size.height / 2)
+                    }
+
+                    // El relleno: desde el centro (bipolar) o la izquierda.
+                    relleno(ancho: ancho, alto: geo.size.height)
+
+                    // El mando.
+                    Circle()
+                        .fill(.white)
+                        .frame(width: 22, height: 22)
+                        .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+                        .position(x: 11 + (ancho - 22) * fraccion,
+                                  y: geo.size.height / 2)
+                }
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { gesto in
+                            let f = min(1, max(0, (gesto.location.x - 11) / max(1, ancho - 22)))
+                            let nuevo = (rango.lowerBound
+                                + f * (rango.upperBound - rango.lowerBound))
+                            valor = (nuevo / paso).rounded() * paso
+                        }
+                )
+            }
+            .frame(height: 26)
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            withAnimation(.snappy) { valor = 0 }
+        }
+        .sensoryFeedback(.selection, trigger: valor == 0) { _, ahoraEnCero in
+            ahoraEnCero != estabaEnCero
+        }
+        .onChange(of: valor) { _, nuevo in
+            estabaEnCero = (nuevo == 0)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(nombre): \(valor.formatted())")
+        .accessibilityHint("Desliza para ajustar; doble toque para poner a cero")
+        .accessibilityAdjustableAction { direccion in
+            let salto = paso * 5
+            switch direccion {
+            case .increment: valor = min(rango.upperBound, valor + salto)
+            case .decrement: valor = max(rango.lowerBound, valor - salto)
+            @unknown default: break
+            }
+        }
+    }
+
+    /// La pista de fondo, con degradado si el control lo pide.
+    private var colorPista: AnyShapeStyle {
+        switch estilo {
+        case .neutro:
+            return AnyShapeStyle(Color.white.opacity(0.14))
+        case .temperatura:
+            return AnyShapeStyle(LinearGradient(
+                colors: [Color(red: 0.35, green: 0.55, blue: 0.95),
+                         Color(white: 0.35),
+                         Color(red: 0.95, green: 0.68, blue: 0.25)],
+                startPoint: .leading, endPoint: .trailing))
+        case .matiz:
+            return AnyShapeStyle(LinearGradient(
+                colors: [Color(red: 0.35, green: 0.8, blue: 0.4),
+                         Color(white: 0.35),
+                         Color(red: 0.9, green: 0.35, blue: 0.75)],
+                startPoint: .leading, endPoint: .trailing))
+        case .saturacion:
+            return AnyShapeStyle(LinearGradient(
+                colors: [Color(white: 0.45),
+                         Color(red: 0.95, green: 0.45, blue: 0.35)],
+                startPoint: .leading, endPoint: .trailing))
+        }
+    }
+
+    /// El relleno de valor (solo en la pista neutra; en las de degradado la
+    /// propia pista ya cuenta la historia y basta con el mando).
+    @ViewBuilder
+    private func relleno(ancho: CGFloat, alto: CGFloat) -> some View {
+        if estilo == .neutro && valor != 0 {
+            let centro = esMonopolar ? 0 : ancho / 2
+            let posicion = ancho * fraccion
+            Capsule()
+                .fill(Color.accentColor)
+                .frame(width: max(3, abs(posicion - centro)), height: 6)
+                .offset(x: min(centro, posicion))
+                .allowsHitTesting(false)
+        }
     }
 }
 

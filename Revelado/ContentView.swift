@@ -34,6 +34,8 @@ struct ContentView: View {
     @State private var mostrarArchivos = false
     @State private var importando = false
     @State private var mensajeError: String? = nil
+    /// Foto pendiente de confirmación de borrado.
+    @State private var fotoAEliminar: Foto? = nil
 
     private var fotosFiltradas: [Foto] {
         switch filtro {
@@ -83,6 +85,15 @@ struct ContentView: View {
                                     CeldaFoto(foto: foto)
                                 }
                                 .buttonStyle(.plain)
+                                // Mantener pulsada una miniatura: opciones.
+                                .contextMenu {
+                                    Button(role: .destructive) {
+                                        fotoAEliminar = foto
+                                    } label: {
+                                        Label("Eliminar de la biblioteca",
+                                              systemImage: "trash")
+                                    }
+                                }
                             }
                         }
                     }
@@ -133,6 +144,30 @@ struct ContentView: View {
         } message: {
             Text(mensajeError ?? "")
         }
+        // Confirmación antes de borrar: se pierde la copia de la biblioteca
+        // y su edición (el archivo de origen fuera de la app no se toca).
+        .confirmationDialog(
+            "¿Eliminar \(fotoAEliminar?.nombreOriginal ?? "esta foto")?",
+            isPresented: Binding(get: { fotoAEliminar != nil },
+                                 set: { si in if !si { fotoAEliminar = nil } }),
+            titleVisibility: .visible
+        ) {
+            Button("Eliminar de la biblioteca", role: .destructive) {
+                if let foto = fotoAEliminar { eliminar(foto) }
+                fotoAEliminar = nil
+            }
+            Button("Cancelar", role: .cancel) { fotoAEliminar = nil }
+        } message: {
+            Text("Se borra la copia de la biblioteca y su edición. El archivo original de donde la importaste no se toca.")
+        }
+    }
+
+    /// Borra la copia del original de la carpeta de la biblioteca y su ficha.
+    private func eliminar(_ foto: Foto) {
+        if let url = try? Biblioteca.urlOriginal(de: foto) {
+            try? FileManager.default.removeItem(at: url)
+        }
+        contexto.delete(foto)
     }
 
     private var hayError: Binding<Bool> {

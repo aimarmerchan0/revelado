@@ -83,11 +83,23 @@ struct ParametrosEdicion: Codable, Equatable {
     var reduccionRuido: Double = 0  // 0...100
     var reduccionRuidoColor: Double = 0
 
-    // --- Sujeto (IA en el dispositivo) ---
-    /// Reiluminado del sujeto detectado (±100 ≈ ±1 EV sobre el sujeto).
+    // --- Selecciones (IA y análisis en el dispositivo) ---
+    // Cada zona detectada tiene su propia luz (±100 ≈ ±1 EV) y saturación.
     var realceSujeto: Double = 0
-    /// Reiluminado del fondo (±100 ≈ ±1 EV sobre el fondo).
     var realceFondo: Double = 0
+    var saturacionSujeto: Double = 0
+    var saturacionFondo: Double = 0
+    var luzCielo: Double = 0
+    var saturacionCielo: Double = 0
+    var luzVerdes: Double = 0
+    var saturacionVerdes: Double = 0
+
+    /// ¿Hay algún ajuste de selección activo que necesite máscaras?
+    var usaSelecciones: Bool {
+        realceSujeto != 0 || realceFondo != 0 || saturacionSujeto != 0
+            || saturacionFondo != 0 || luzCielo != 0 || saturacionCielo != 0
+            || luzVerdes != 0 || saturacionVerdes != 0
+    }
 
     /// La receta sin tocar.
     static let neutros = ParametrosEdicion()
@@ -116,7 +128,8 @@ struct ParametrosEdicion: Codable, Equatable {
         case intensidad, saturacion, hsl
         case textura, claridad, vineta
         case enfoque, reduccionRuido, reduccionRuidoColor
-        case realceSujeto, realceFondo
+        case realceSujeto, realceFondo, saturacionSujeto, saturacionFondo
+        case luzCielo, saturacionCielo, luzVerdes, saturacionVerdes
     }
 
     init(from decoder: Decoder) throws {
@@ -154,5 +167,37 @@ struct ParametrosEdicion: Codable, Equatable {
         reduccionRuidoColor = try c.decodeIfPresent(Double.self, forKey: .reduccionRuidoColor) ?? 0
         realceSujeto = try c.decodeIfPresent(Double.self, forKey: .realceSujeto) ?? 0
         realceFondo = try c.decodeIfPresent(Double.self, forKey: .realceFondo) ?? 0
+        saturacionSujeto = try c.decodeIfPresent(Double.self, forKey: .saturacionSujeto) ?? 0
+        saturacionFondo = try c.decodeIfPresent(Double.self, forKey: .saturacionFondo) ?? 0
+        luzCielo = try c.decodeIfPresent(Double.self, forKey: .luzCielo) ?? 0
+        saturacionCielo = try c.decodeIfPresent(Double.self, forKey: .saturacionCielo) ?? 0
+        luzVerdes = try c.decodeIfPresent(Double.self, forKey: .luzVerdes) ?? 0
+        saturacionVerdes = try c.decodeIfPresent(Double.self, forKey: .saturacionVerdes) ?? 0
+    }
+
+    // =========================================================================
+    // Looks: fusionar un preset sobre la receta actual. Solo toca tono,
+    // color, curva, mezclador y efectos — nunca la geometría, el balance con
+    // cuentagotas ni las selecciones, que son propios de cada foto.
+    // =========================================================================
+    mutating func fusionarLook(_ look: ParametrosEdicion) {
+        exposicion = look.exposicion
+        contraste = look.contraste
+        altasLuces = look.altasLuces
+        sombras = look.sombras
+        blancos = look.blancos
+        negros = look.negros
+        curvaLuma = look.curvaLuma
+        curvaR = look.curvaR
+        curvaV = look.curvaV
+        curvaA = look.curvaA
+        temperatura = look.temperatura
+        matiz = look.matiz
+        intensidad = look.intensidad
+        saturacion = look.saturacion
+        hsl = look.hsl
+        textura = look.textura
+        claridad = look.claridad
+        vineta = look.vineta
     }
 }

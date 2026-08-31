@@ -19,7 +19,7 @@ struct ReveladoApp: App {
                 .tint(Color(red: 0.91, green: 0.64, blue: 0.24))
         }
         // Abre (o crea) la base de datos local de la biblioteca y la pone a
-        // disposición de todas las pantallas.
-        .modelContainer(for: Foto.self)
+        // disposición de todas las pantallas: fichas de fotos y presets.
+        .modelContainer(for: [Foto.self, PresetGuardado.self])
     }
 }

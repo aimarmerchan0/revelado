@@ -195,13 +195,23 @@ final class MotorRevelado {
         let cubo = parametros.hslEsNeutro
             ? nil
             : ProcesadoColor.generarCuboHSL(parametros.hsl)
-        // La detección de sujeto se repite sobre la imagen a resolución
-        // completa, para que la máscara exportada tenga el detalle máximo.
-        let mascara = (parametros.realceSujeto != 0 || parametros.realceFondo != 0)
-            ? mascaraSujeto(de: base)
-            : nil
+        // Las selecciones se recalculan sobre la imagen a resolución
+        // completa, para que las máscaras exportadas tengan el máximo detalle.
+        var mascaras = Mascaras()
+        if parametros.usaSelecciones {
+            if parametros.realceSujeto != 0 || parametros.realceFondo != 0
+                || parametros.saturacionSujeto != 0 || parametros.saturacionFondo != 0 {
+                mascaras.sujeto = mascaraSujeto(de: base)
+            }
+            if parametros.luzCielo != 0 || parametros.saturacionCielo != 0 {
+                mascaras.cielo = mascaraHeuristica(de: base, zona: .cielo)
+            }
+            if parametros.luzVerdes != 0 || parametros.saturacionVerdes != 0 {
+                mascaras.vegetacion = mascaraHeuristica(de: base, zona: .vegetacion)
+            }
+        }
         return aplicarAjustes(a: base, parametros: parametros,
-                              cuboHSL: cubo, mascaraSujeto: mascara,
+                              cuboHSL: cubo, mascaras: mascaras,
                               decodificadoRAW: esRAW)
     }
 
@@ -397,16 +407,23 @@ final class MotorRevelado {
         return imagen
     }
 
+    /// Las máscaras de selección disponibles para una foto.
+    struct Mascaras {
+        var sujeto: CIImage? = nil
+        var cielo: CIImage? = nil
+        var vegetacion: CIImage? = nil
+    }
+
     /// Aplica la receta completa de tono y color sobre una imagen ya revelada.
     /// `cuboHSL` es la tabla del mezclador generada por ProcesadoColor (se
     /// pasa ya hecha para no recalcularla en cada fotograma).
-    /// `mascaraSujeto` es la máscara de la detección de sujeto, si existe.
+    /// `mascaras` son las selecciones detectadas (sujeto, cielo, vegetación).
     /// `decodificadoRAW` = true cuando la imagen viene del revelador RAW,
     /// donde exposición, ruido y enfoque YA se aplicaron a nivel de sensor.
     func aplicarAjustes(a origen: CIImage,
                         parametros p: ParametrosEdicion,
                         cuboHSL: Data? = nil,
-                        mascaraSujeto: CIImage? = nil,
+                        mascaras: Mascaras = Mascaras(),
                         decodificadoRAW: Bool = false) -> CIImage {
         var imagen = aplicarGeometria(a: origen, parametros: p)
 
@@ -544,27 +561,58 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
-        // Reiluminado de sujeto/fondo con la máscara de la detección IA:
-        // el sujeto y el fondo se exponen por separado y la máscara los une.
-        if let mascaraSujeto, p.realceSujeto != 0 || p.realceFondo != 0 {
-            let mascara = aplicarGeometria(a: mascaraSujeto, parametros: p)
-
-            func reexponer(_ base: CIImage, ev: Double) -> CIImage {
-                guard ev != 0 else { return base }
+        // ---- Selecciones: cada zona con su propia luz y saturación ----
+        // La zona ajustada y el resto se funden con la máscara detectada.
+        func ajustar(_ base: CIImage, luz: Double, saturacion: Double) -> CIImage {
+            var resultado = base
+            if luz != 0 {
                 let filtro = CIFilter.exposureAdjust()
-                filtro.inputImage = base
-                filtro.ev = Float(ev)
-                return filtro.outputImage ?? base
+                filtro.inputImage = resultado
+                filtro.ev = Float(luz / 100.0)
+                resultado = filtro.outputImage ?? resultado
             }
+            if saturacion != 0 {
+                let filtro = CIFilter.colorControls()
+                filtro.inputImage = resultado
+                filtro.saturation = Float(1.0 + saturacion / 100.0)
+                filtro.brightness = 0
+                filtro.contrast = 1
+                resultado = filtro.outputImage ?? resultado
+            }
+            return resultado
+        }
 
-            let sujeto = reexponer(imagen, ev: p.realceSujeto / 100.0)
-            let fondo = reexponer(imagen, ev: p.realceFondo / 100.0)
-
+        func fundir(zona: CIImage, resto: CIImage, mascara: CIImage) -> CIImage {
             let filtro = CIFilter.blendWithMask()
-            filtro.inputImage = sujeto
-            filtro.backgroundImage = fondo
+            filtro.inputImage = zona
+            filtro.backgroundImage = resto
             filtro.maskImage = mascara
-            imagen = filtro.outputImage ?? imagen
+            return filtro.outputImage ?? resto
+        }
+
+        if let sujeto = mascaras.sujeto,
+           p.realceSujeto != 0 || p.realceFondo != 0
+            || p.saturacionSujeto != 0 || p.saturacionFondo != 0 {
+            let mascara = aplicarGeometria(a: sujeto, parametros: p)
+            let zonaSujeto = ajustar(imagen, luz: p.realceSujeto,
+                                     saturacion: p.saturacionSujeto)
+            let zonaFondo = ajustar(imagen, luz: p.realceFondo,
+                                    saturacion: p.saturacionFondo)
+            imagen = fundir(zona: zonaSujeto, resto: zonaFondo, mascara: mascara)
+        }
+
+        if let cielo = mascaras.cielo, p.luzCielo != 0 || p.saturacionCielo != 0 {
+            let mascara = aplicarGeometria(a: cielo, parametros: p)
+            let zona = ajustar(imagen, luz: p.luzCielo,
+                               saturacion: p.saturacionCielo)
+            imagen = fundir(zona: zona, resto: imagen, mascara: mascara)
+        }
+
+        if let verdes = mascaras.vegetacion, p.luzVerdes != 0 || p.saturacionVerdes != 0 {
+            let mascara = aplicarGeometria(a: verdes, parametros: p)
+            let zona = ajustar(imagen, luz: p.luzVerdes,
+                               saturacion: p.saturacionVerdes)
+            imagen = fundir(zona: zona, resto: imagen, mascara: mascara)
         }
 
         // Reducción de ruido, antes del enfoque para no afilar el ruido.
@@ -620,9 +668,13 @@ final class MotorRevelado {
         return CIImage(cvPixelBuffer: bufer)
     }
 
-    /// Percentiles de luminosidad (sombras, medios, luces) para el Auto:
-    /// el fotómetro matricial de la app.
-    func estadisticasTonales(de imagen: CIImage) -> (p05: Double, p50: Double, p95: Double)? {
+    /// Percentiles de luminosidad para el Auto: el fotómetro matricial de la
+    /// app, con los dos extremos (1% y 99%) para vigilar recortes.
+    struct EstadisticasTonales {
+        let p01: Double, p05: Double, p50: Double, p95: Double, p99: Double
+    }
+
+    func estadisticasTonales(de imagen: CIImage) -> EstadisticasTonales? {
         guard let h = calcularHistograma(de: imagen) else { return nil }
         let bins = h.r.count
         let luma = (0..<bins).map { Double(h.r[$0] + h.v[$0] + h.a[$0]) / 3 }
@@ -639,7 +691,98 @@ final class MotorRevelado {
             }
             return 1
         }
-        return (percentil(0.05), percentil(0.5), percentil(0.95))
+        return EstadisticasTonales(p01: percentil(0.01), p05: percentil(0.05),
+                                   p50: percentil(0.5), p95: percentil(0.95),
+                                   p99: percentil(0.99))
+    }
+
+    // =========================================================================
+    // Máscaras por análisis de color (cielo y vegetación). Se calculan a baja
+    // resolución en CPU con criterios fotográficos (dominancia de canal más
+    // posición en el encuadre para el cielo), se suavizan y se escalan.
+    // =========================================================================
+    enum ZonaHeuristica { case cielo, vegetacion }
+
+    func mascaraHeuristica(de imagen: CIImage, zona: ZonaHeuristica) -> CIImage? {
+        let extension_ = imagen.extent
+        guard extension_.width > 0, extension_.height > 0 else { return nil }
+
+        // Analizar a baja resolución: sobra para una máscara suave.
+        let ladoAnalisis = 240.0
+        let escala = ladoAnalisis / max(extension_.width, extension_.height)
+        let ancho = max(8, Int(extension_.width * escala))
+        let alto = max(8, Int(extension_.height * escala))
+
+        var pixeles = [UInt8](repeating: 0, count: ancho * alto * 4)
+        let reducida = imagen.transformed(by: .init(scaleX: escala, y: escala))
+        contexto.render(reducida, toBitmap: &pixeles, rowBytes: ancho * 4,
+                        bounds: CGRect(x: 0, y: 0, width: ancho, height: alto),
+                        format: .RGBA8, colorSpace: espacioSalidaPantalla)
+
+        var mascara = [UInt8](repeating: 0, count: ancho * alto)
+        var cubiertos = 0
+        for y in 0..<alto {
+            // toBitmap entrega la fila 0 arriba; la imagen cuenta desde abajo.
+            let alturaNormalizada = 1.0 - Double(y) / Double(alto - 1)
+            for x in 0..<ancho {
+                let i = (y * ancho + x) * 4
+                let r = Double(pixeles[i]) / 255
+                let g = Double(pixeles[i + 1]) / 255
+                let b = Double(pixeles[i + 2]) / 255
+                let luminancia = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+                var peso = 0.0
+                switch zona {
+                case .cielo:
+                    // Azul dominante y luminoso, con más confianza cuanto
+                    // más arriba del encuadre.
+                    let dominanciaAzul = b - max(r, g * 0.95)
+                    if dominanciaAzul > 0.02 && luminancia > 0.25 {
+                        peso = min(1, dominanciaAzul * 8)
+                            * (0.35 + 0.65 * alturaNormalizada)
+                    }
+                    // Cielo blanco/nublado: muy luminoso, casi neutro, arriba.
+                    let neutro = abs(r - g) < 0.05 && abs(g - b) < 0.06
+                    if peso < 0.2 && neutro && luminancia > 0.82
+                        && alturaNormalizada > 0.55 {
+                        peso = 0.7
+                    }
+                case .vegetacion:
+                    // Verde dominante sobre rojo y azul.
+                    let dominanciaVerde = g - max(r * 1.02, b * 1.05)
+                    if dominanciaVerde > 0.02 {
+                        peso = min(1, dominanciaVerde * 9)
+                    }
+                }
+                if peso > 0.15 { cubiertos += 1 }
+                mascara[y * ancho + x] = UInt8(min(255, max(0, peso * 255)))
+            }
+        }
+
+        // Si la zona apenas existe en la foto, mejor no ofrecer la selección.
+        guard Double(cubiertos) / Double(ancho * alto) > 0.02 else { return nil }
+
+        // Gris de un canal -> imagen; suavizar; escalar al tamaño real.
+        var rgba = [UInt8](repeating: 255, count: ancho * alto * 4)
+        for i in 0..<(ancho * alto) {
+            rgba[i * 4] = mascara[i]
+            rgba[i * 4 + 1] = mascara[i]
+            rgba[i * 4 + 2] = mascara[i]
+        }
+        let datos = Data(rgba)
+        guard var imagenMascara = CIImage(
+            bitmapData: datos, bytesPerRow: ancho * 4,
+            size: CGSize(width: ancho, height: alto),
+            format: .RGBA8, colorSpace: nil) as CIImage? else { return nil }
+
+        imagenMascara = imagenMascara
+            .applyingGaussianBlur(sigma: 2.5)
+            .cropped(to: CGRect(x: 0, y: 0, width: ancho, height: alto))
+            .transformed(by: .init(scaleX: extension_.width / CGFloat(ancho),
+                                   y: extension_.height / CGFloat(alto)))
+            .transformed(by: .init(translationX: extension_.origin.x,
+                                   y: extension_.origin.y))
+        return imagenMascara
     }
 
     /// Luminosidad media de la imagen (0...1, en valores de pantalla), para
