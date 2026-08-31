@@ -13,6 +13,7 @@
 // =============================================================================
 
 import SwiftUI
+import SwiftData
 import CoreImage
 import Photos
 
