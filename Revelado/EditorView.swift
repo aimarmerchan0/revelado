@@ -287,6 +287,12 @@ struct EditorView: View {
                             Label("Compartir TIFF de 16 bits",
                                   systemImage: "square.and.arrow.up")
                         }
+                        Button {
+                            Task { await compartirJPEG() }
+                        } label: {
+                            Label("Compartir JPEG (calidad máxima)",
+                                  systemImage: "square.and.arrow.up.on.square")
+                        }
                     }
                     Section {
                         Button {
@@ -1202,6 +1208,29 @@ struct EditorView: View {
                 let completa = try MotorRevelado.compartido.renderizarParaExportar(
                     en: url, esRAW: esRAW, parametros: receta)
                 try MotorRevelado.compartido.exportarTIFF16(imagen: completa, a: destino)
+            }.value
+
+            tiffParaCompartir = ArchivoCompartible(url: destino)
+        } catch {
+            avisoExportacion = "No se pudo exportar: \(error.localizedDescription)"
+        }
+    }
+
+    @MainActor
+    private func compartirJPEG() async {
+        exportando = true
+        defer { exportando = false }
+        do {
+            let url = try Biblioteca.urlOriginal(de: foto)
+            let esRAW = foto.esRAW
+            let receta = parametros
+            let destino = FileManager.default.temporaryDirectory
+                .appendingPathComponent("\(nombreExportacion).jpg")
+
+            try await Task.detached(priority: .userInitiated) {
+                let completa = try MotorRevelado.compartido.renderizarParaExportar(
+                    en: url, esRAW: esRAW, parametros: receta)
+                try MotorRevelado.compartido.exportarJPEG(imagen: completa, a: destino)
             }.value
 
             tiffParaCompartir = ArchivoCompartible(url: destino)
