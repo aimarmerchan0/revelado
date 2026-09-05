@@ -471,6 +471,45 @@ final class MotorRevelado {
         return fusion.outputImage ?? origen
     }
 
+    /// El mecanismo del viraje partido: tiñe una banda tonal (definida por la
+    /// rampa) hacia cálido (+) o frío (-), desplazando rojo y azul en
+    /// direcciones opuestas y fundiendo con la máscara de la banda.
+    private func aplicarViraje(_ origen: CIImage, cantidad: Double,
+                               rampa: [PuntoCurva]) -> CIImage {
+        guard cantidad != 0 else { return origen }
+
+        // Máscara de la banda (misma técnica que las bandas tonales).
+        let luma = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+        let gris = CIFilter.colorMatrix()
+        gris.inputImage = origen
+        gris.rVector = luma; gris.gVector = luma; gris.bVector = luma
+        gris.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        var mascara = gris.outputImage ?? origen
+        let curva = CIFilter.colorCurves()
+        curva.inputImage = mascara
+        curva.curvesData = ProcesadoColor.datosCurvaUnica(rampa)
+        curva.curvesDomain = CIVector(x: 0, y: 1)
+        curva.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        mascara = curva.outputImage ?? mascara
+
+        // La versión teñida: +cálido = rojo arriba y azul abajo; -frío al revés.
+        let k = CGFloat(cantidad / 100.0)
+        let tenida = CIFilter.colorMatrix()
+        tenida.inputImage = origen
+        tenida.rVector = CIVector(x: 1, y: 0, z: 0, w: 0)
+        tenida.gVector = CIVector(x: 0, y: 1, z: 0, w: 0)
+        tenida.bVector = CIVector(x: 0, y: 0, z: 1, w: 0)
+        tenida.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+        tenida.biasVector = CIVector(x: 0.045 * k, y: 0.008 * k, z: -0.05 * k, w: 0)
+        guard let ajustada = tenida.outputImage else { return origen }
+
+        let fusion = CIFilter.blendWithMask()
+        fusion.inputImage = ajustada
+        fusion.backgroundImage = origen
+        fusion.maskImage = mascara
+        return fusion.outputImage ?? origen
+    }
+
     /// Geometría: giros de 90°, espejo y enderezado del horizonte. Se aplica
     /// antes que cualquier ajuste de color. Al enderezar, la imagen se amplía
     /// lo justo para que no asomen los bordes vacíos y se recorta al marco.
@@ -723,6 +762,25 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
+        // Viraje partido: teñir las luces y las sombras por separado, como
+        // los virajes químicos de laboratorio. Positivo = cálido (ámbar),
+        // negativo = frío (azulado). Usa las mismas máscaras tonales suaves
+        // que las bandas de luz.
+        if p.virajeLuces != 0 {
+            imagen = aplicarViraje(imagen, cantidad: p.virajeLuces,
+                                   rampa: [PuntoCurva(x: 0, y: 0),
+                                           PuntoCurva(x: 0.45, y: 0),
+                                           PuntoCurva(x: 0.95, y: 1),
+                                           PuntoCurva(x: 1, y: 1)])
+        }
+        if p.virajeSombras != 0 {
+            imagen = aplicarViraje(imagen, cantidad: p.virajeSombras,
+                                   rampa: [PuntoCurva(x: 0, y: 1),
+                                           PuntoCurva(x: 0.12, y: 1),
+                                           PuntoCurva(x: 0.55, y: 0),
+                                           PuntoCurva(x: 1, y: 0)])
+        }
+
         // Quitar neblina: contraste local de radio muy grande, punto negro
         // ligeramente abajo (el velo atmosférico levanta los negros) y una
         // pizca de intensidad para devolver el color que la bruma lava.
@@ -766,6 +824,54 @@ final class MotorRevelado {
             filtro.intensity = Float(p.vineta / 100.0)
             filtro.radius = 2
             imagen = filtro.outputImage ?? imagen
+        }
+
+        // Halación: las luces "sangran" un resplandor ámbar difuso, como en
+        // la película antigua cuando la luz rebotaba en el soporte. Se aísla
+        // el brillo, se difumina en proporción al tamaño de la imagen, se
+        // tiñe de ámbar y se SUMA sobre la foto.
+        if p.halacion > 0 {
+            let intensidad = CGFloat(p.halacion / 100.0) * 0.30
+
+            // Máscara de brillos altos.
+            let luma = CIVector(x: 0.2126, y: 0.7152, z: 0.0722, w: 0)
+            let gris = CIFilter.colorMatrix()
+            gris.inputImage = imagen
+            gris.rVector = luma; gris.gVector = luma; gris.bVector = luma
+            gris.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+            let rampa = CIFilter.colorCurves()
+            rampa.inputImage = gris.outputImage
+            rampa.curvesData = ProcesadoColor.datosCurvaUnica(
+                [PuntoCurva(x: 0, y: 0), PuntoCurva(x: 0.7, y: 0),
+                 PuntoCurva(x: 0.96, y: 1), PuntoCurva(x: 1, y: 1)])
+            rampa.curvesDomain = CIVector(x: 0, y: 1)
+            rampa.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+
+            if let mascaraBrillo = rampa.outputImage {
+                // Solo los brillos, teñidos de ámbar y atenuados.
+                let brillos = CIFilter.multiplyCompositing()
+                brillos.inputImage = mascaraBrillo
+                brillos.backgroundImage = imagen
+                let tinte = CIFilter.colorMatrix()
+                tinte.inputImage = brillos.outputImage
+                tinte.rVector = CIVector(x: 1.0 * intensidad, y: 0, z: 0, w: 0)
+                tinte.gVector = CIVector(x: 0, y: 0.86 * intensidad, z: 0, w: 0)
+                tinte.bVector = CIVector(x: 0, y: 0, z: 0.62 * intensidad, w: 0)
+                tinte.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+
+                // Difuminar en proporción al tamaño y sumar.
+                if let aislado = tinte.outputImage {
+                    let radio = max(6.0, imagen.extent.width / 90.0)
+                    let resplandor = aislado
+                        .clampedToExtent()
+                        .applyingGaussianBlur(sigma: radio)
+                        .cropped(to: imagen.extent)
+                    let suma = CIFilter.additionCompositing()
+                    suma.inputImage = resplandor
+                    suma.backgroundImage = imagen
+                    imagen = suma.outputImage ?? imagen
+                }
+            }
         }
 
         // Grano de película, lo último de todo: ruido monocromo estable

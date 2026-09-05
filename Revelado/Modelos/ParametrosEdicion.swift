@@ -79,6 +79,12 @@ struct ParametrosEdicion: Codable, Equatable {
     var vineta: Double = 0          // negativo oscurece bordes, positivo aclara
     var neblina: Double = 0         // 0...100: quitar velo atmosférico
     var grano: Double = 0           // 0...100: grano de película
+    /// Viraje partido: color de las luces (+cálido / -frío) y de las
+    /// sombras por separado, como los virajes químicos de laboratorio.
+    var virajeLuces: Double = 0     // -100...+100
+    var virajeSombras: Double = 0   // -100...+100
+    /// Halación: resplandor ámbar que las luces "sangran" (película antigua).
+    var halacion: Double = 0        // 0...100
 
     // --- Detalle ---
     var enfoque: Double = 0         // 0...100
@@ -129,6 +135,7 @@ struct ParametrosEdicion: Codable, Equatable {
         case temperatura, matiz, puntoNeutroX, puntoNeutroY, neutroR, neutroG, neutroB
         case intensidad, saturacion, hsl
         case textura, claridad, vineta, neblina, grano
+        case virajeLuces, virajeSombras, halacion
         case enfoque, reduccionRuido, reduccionRuidoColor
         case realceSujeto, realceFondo, saturacionSujeto, saturacionFondo
         case luzCielo, saturacionCielo, luzVerdes, saturacionVerdes
@@ -166,6 +173,9 @@ struct ParametrosEdicion: Codable, Equatable {
         vineta = try c.decodeIfPresent(Double.self, forKey: .vineta) ?? 0
         neblina = try c.decodeIfPresent(Double.self, forKey: .neblina) ?? 0
         grano = try c.decodeIfPresent(Double.self, forKey: .grano) ?? 0
+        virajeLuces = try c.decodeIfPresent(Double.self, forKey: .virajeLuces) ?? 0
+        virajeSombras = try c.decodeIfPresent(Double.self, forKey: .virajeSombras) ?? 0
+        halacion = try c.decodeIfPresent(Double.self, forKey: .halacion) ?? 0
         enfoque = try c.decodeIfPresent(Double.self, forKey: .enfoque) ?? 0
         reduccionRuido = try c.decodeIfPresent(Double.self, forKey: .reduccionRuido) ?? 0
         reduccionRuidoColor = try c.decodeIfPresent(Double.self, forKey: .reduccionRuidoColor) ?? 0
@@ -205,5 +215,8 @@ struct ParametrosEdicion: Codable, Equatable {
         vineta = look.vineta
         neblina = look.neblina
         grano = look.grano
+        virajeLuces = look.virajeLuces
+        virajeSombras = look.virajeSombras
+        halacion = look.halacion
     }
 }

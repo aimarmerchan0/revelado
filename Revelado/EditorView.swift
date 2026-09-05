@@ -762,6 +762,15 @@ struct EditorView: View {
         FilaAjuste("Quitar neblina", valor: $parametros.neblina, rango: 0...100)
         FilaAjuste("Viñeta", valor: $parametros.vineta)
         FilaAjuste("Grano", valor: $parametros.grano, rango: 0...100)
+
+        Text("Viraje partido")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 10)
+        FilaAjuste("Luces", valor: $parametros.virajeLuces, estilo: .temperatura)
+        FilaAjuste("Sombras", valor: $parametros.virajeSombras, estilo: .temperatura)
+        FilaAjuste("Halación", valor: $parametros.halacion, rango: 0...100)
     }
 
     // ---- Detalle ----

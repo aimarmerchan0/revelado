@@ -69,6 +69,8 @@ enum Looks {
             p.hsl[3].tono = 18; p.hsl[3].saturacion = -25   // verdes → ocre
             p.hsl[2].saturacion = -10                        // amarillos calmados
             p.vineta = -18; p.grano = 30
+            // Con las herramientas nuevas, el viraje real del estilo:
+            p.virajeLuces = 30; p.virajeSombras = 18
         }),
         LookIntegrado(nombre: "Vivo", simbolo: "sun.max.fill", receta: receta { p in
             p.contraste = 15; p.intensidad = 28; p.saturacion = 5
