@@ -471,6 +471,18 @@ final class MotorRevelado {
         return fusion.outputImage ?? origen
     }
 
+    /// Caché de tablas de color de los looks (se cargan del paquete una vez).
+    private static var lutsCargadas: [String: Data] = [:]
+
+    /// Carga la LUT de un look desde los recursos de la app.
+    func cargarLUT(_ nombre: String) -> Data? {
+        if let datos = Self.lutsCargadas[nombre] { return datos }
+        guard let url = Bundle.main.url(forResource: nombre, withExtension: "dat"),
+              let datos = try? Data(contentsOf: url) else { return nil }
+        Self.lutsCargadas[nombre] = datos
+        return datos
+    }
+
     /// El mecanismo del viraje partido: tiñe una banda tonal (definida por la
     /// rampa) hacia cálido (+) o frío (-), desplazando rojo y azul en
     /// direcciones opuestas y fundiendo con la máscara de la banda.
@@ -657,6 +669,17 @@ final class MotorRevelado {
             filtro.curvesData = ProcesadoColor.datosCurvas(
                 luma: p.curvaLuma, r: p.curvaR, v: p.curvaV, a: p.curvaA)
             filtro.curvesDomain = CIVector(x: 0, y: 1)
+            filtro.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+            imagen = filtro.outputImage ?? imagen
+        }
+
+        // Tabla de color de look (LUT): la matemática exacta de un estilo
+        // calibrado fuera de la app, aplicada en una sola pasada.
+        if let nombreLUT = p.lutNombre, let datosLUT = cargarLUT(nombreLUT) {
+            let filtro = CIFilter.colorCubeWithColorSpace()
+            filtro.inputImage = imagen
+            filtro.cubeData = datosLUT
+            filtro.cubeDimension = 33
             filtro.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
             imagen = filtro.outputImage ?? imagen
         }

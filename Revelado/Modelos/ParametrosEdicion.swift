@@ -86,6 +86,11 @@ struct ParametrosEdicion: Codable, Equatable {
     /// Halación: resplandor ámbar que las luces "sangran" (película antigua).
     var halacion: Double = 0        // 0...100
 
+    /// Nombre de la tabla de color (LUT) de un look integrado, o nil.
+    /// Una LUT aplica la matemática EXACTA de un estilo calibrado fuera,
+    /// sin traducirla a deslizadores: precisión de laboratorio.
+    var lutNombre: String? = nil
+
     // --- Detalle ---
     var enfoque: Double = 0         // 0...100
     var reduccionRuido: Double = 0  // 0...100
@@ -135,7 +140,7 @@ struct ParametrosEdicion: Codable, Equatable {
         case temperatura, matiz, puntoNeutroX, puntoNeutroY, neutroR, neutroG, neutroB
         case intensidad, saturacion, hsl
         case textura, claridad, vineta, neblina, grano
-        case virajeLuces, virajeSombras, halacion
+        case virajeLuces, virajeSombras, halacion, lutNombre
         case enfoque, reduccionRuido, reduccionRuidoColor
         case realceSujeto, realceFondo, saturacionSujeto, saturacionFondo
         case luzCielo, saturacionCielo, luzVerdes, saturacionVerdes
@@ -176,6 +181,7 @@ struct ParametrosEdicion: Codable, Equatable {
         virajeLuces = try c.decodeIfPresent(Double.self, forKey: .virajeLuces) ?? 0
         virajeSombras = try c.decodeIfPresent(Double.self, forKey: .virajeSombras) ?? 0
         halacion = try c.decodeIfPresent(Double.self, forKey: .halacion) ?? 0
+        lutNombre = try c.decodeIfPresent(String.self, forKey: .lutNombre)
         enfoque = try c.decodeIfPresent(Double.self, forKey: .enfoque) ?? 0
         reduccionRuido = try c.decodeIfPresent(Double.self, forKey: .reduccionRuido) ?? 0
         reduccionRuidoColor = try c.decodeIfPresent(Double.self, forKey: .reduccionRuidoColor) ?? 0
@@ -218,5 +224,6 @@ struct ParametrosEdicion: Codable, Equatable {
         virajeLuces = look.virajeLuces
         virajeSombras = look.virajeSombras
         halacion = look.halacion
+        lutNombre = look.lutNombre
     }
 }

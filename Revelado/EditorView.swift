@@ -37,6 +37,8 @@ struct EditorView: View {
 
     /// Modo inteligente de presets: aplicar un look ejecuta también el Auto.
     @State private var presetsInteligentes = true
+    /// Previsualizaciones de los looks sobre ESTA foto (nombre → miniatura).
+    @State private var previewsLooks: [String: UIImage] = [:]
     @State private var nombreNuevoPreset = ""
     @State private var pidiendoNombrePreset = false
     @Environment(\.modelContext) private var contextoDatos
@@ -574,22 +576,37 @@ struct EditorView: View {
                     Button {
                         aplicarLook(look.receta)
                     } label: {
-                        VStack(spacing: 4) {
-                            Image(systemName: look.simbolo)
-                                .font(.system(size: 18))
+                        ZStack(alignment: .bottom) {
+                            // La previsualización REAL del look sobre esta
+                            // foto; mientras se calcula, el símbolo.
+                            if let preview = previewsLooks[look.nombre] {
+                                Image(uiImage: preview)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Color.white.opacity(0.06)
+                                Image(systemName: look.simbolo)
+                                    .font(.system(size: 18))
+                                    .frame(maxHeight: .infinity)
+                            }
                             Text(look.nombre)
-                                .font(.caption2)
+                                .font(.caption2.bold())
                                 .lineLimit(1)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .frame(maxWidth: .infinity)
+                                .background(.black.opacity(0.55))
+                                .foregroundStyle(.white)
                         }
-                        .frame(width: 84, height: 56)
-                        .background(Color.white.opacity(0.06),
-                                    in: RoundedRectangle(cornerRadius: 10))
+                        .frame(width: 92, height: 66)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.vertical, 8)
         }
+        .task { generarPreviewsLooks() }
 
         if !presetsGuardados.isEmpty {
             Text("Mis presets")
@@ -618,6 +635,36 @@ struct EditorView: View {
                 }
                 .padding(.vertical, 8)
             }
+        }
+    }
+
+    /// Genera las miniaturas de los looks aplicados a esta foto (una vez).
+    private func generarPreviewsLooks() {
+        guard previewsLooks.isEmpty, let original = imagenOriginal else { return }
+        Task.detached(priority: .utility) {
+            let motor = MotorRevelado.compartido
+            let lado: CGFloat = 220
+            let extension_ = original.extent
+            let factor = min(1, lado / max(extension_.width, extension_.height))
+            let pequena = original.transformed(by: .init(scaleX: factor, y: factor))
+
+            var resultado: [String: UIImage] = [:]
+            for look in Looks.integrados {
+                var receta = ParametrosEdicion.neutros
+                receta.fusionarLook(look.receta)
+                let cubo = receta.hslEsNeutro
+                    ? nil
+                    : ProcesadoColor.generarCuboHSL(receta.hsl)
+                let revelada = motor.aplicarAjustes(a: pequena, parametros: receta,
+                                                    cuboHSL: cubo)
+                if let cg = motor.contexto.createCGImage(
+                    revelada, from: revelada.extent, format: .RGBA8,
+                    colorSpace: motor.espacioSalidaPantalla) {
+                    resultado[look.nombre] = UIImage(cgImage: cg)
+                }
+            }
+            let final = resultado
+            await MainActor.run { previewsLooks = final }
         }
     }
 

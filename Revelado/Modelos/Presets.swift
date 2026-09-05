@@ -57,21 +57,13 @@ enum Looks {
 
     static let integrados: [LookIntegrado] = [
         LookIntegrado(nombre: "Dorado 70", simbolo: "sun.haze.fill", receta: receta { p in
-            // El estilo calibrado con Aimar (versión 1A5, cálido con
-            // halación): baño ámbar vivo, medios luminosos, negros mate,
-            // verdes hacia ocre y resplandor de película en las luces.
-            p.temperatura = 16; p.matiz = 2
-            p.contraste = 10; p.blancos = -12; p.sombras = 8
-            p.saturacion = -6
-            p.curvaLuma = [PuntoCurva(x: 0, y: 0.055),
-                           PuntoCurva(x: 0.25, y: 0.27),
-                           PuntoCurva(x: 0.5, y: 0.565),
-                           PuntoCurva(x: 0.75, y: 0.81),
-                           PuntoCurva(x: 1, y: 0.96)]
-            p.hsl[3].tono = 16; p.hsl[3].saturacion = -20   // verdes → ocre
-            p.hsl[2].saturacion = -8                         // amarillos calmados
+            // El estilo de Aimar (versión 1A5): TODO el color viene de la
+            // tabla Dorado70Cubo.dat, generada con la matemática exacta del
+            // revelado original — sin traducción a deslizadores, precisión
+            // de laboratorio. Aquí solo queda lo espacial: viñeta, grano y
+            // halación, que una tabla de color no puede llevar.
+            p.lutNombre = "Dorado70Cubo"
             p.vineta = -16; p.grano = 28
-            p.virajeLuces = 32; p.virajeSombras = 20
             p.halacion = 20
         }),
         LookIntegrado(nombre: "Vivo", simbolo: "sun.max.fill", receta: receta { p in
