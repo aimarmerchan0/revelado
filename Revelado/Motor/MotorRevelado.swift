@@ -925,16 +925,20 @@ final class MotorRevelado {
         }
 
         // Grano de película, lo último de todo: ruido monocromo estable
-        // (mismo patrón en cada render) fundido en luz suave. La amplitud
-        // está calibrada contra el revelado de referencia (grano 28 ≈
-        // desviación 0.013 en valores de pantalla).
+        // (mismo patrón en cada render) fundido en luz suave.
+        // La amplitud sigue una curva de potencia para que el deslizador
+        // tenga gradación real: a 10 se insinúa, a 50 está presente, a 100
+        // es marcado — nada de "todo o nada".
         if p.grano > 0 {
-            let intensidad = CGFloat(p.grano / 100.0) * 0.045
+            let intensidad = CGFloat(pow(p.grano / 100.0, 0.75)) * 0.10
             if let ruidoBruto = CIFilter.randomGenerator().outputImage {
                 let luma = CIVector(x: 1.0 / 3, y: 1.0 / 3, z: 1.0 / 3, w: 0)
                 let gris = CIFilter.colorMatrix()
-                // Grano algo más grueso que el píxel, como el de película.
-                gris.inputImage = ruidoBruto.transformed(by: .init(scaleX: 1.8, y: 1.8))
+                // El tamaño del grano escala con la imagen: mismo aspecto en
+                // la previsualización y en la exportación a resolución completa.
+                let escalaGrano = max(1.2, imagen.extent.width / 2200)
+                gris.inputImage = ruidoBruto.transformed(by: .init(scaleX: escalaGrano,
+                                                                   y: escalaGrano))
                 gris.rVector = CIVector(x: luma.x * intensidad, y: luma.y * intensidad, z: luma.z * intensidad, w: 0)
                 gris.gVector = gris.rVector
                 gris.bVector = gris.rVector
