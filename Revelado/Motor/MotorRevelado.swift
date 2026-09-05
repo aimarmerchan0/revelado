@@ -579,12 +579,23 @@ final class MotorRevelado {
 
         // Exposición: en luz lineal, sumar EV es multiplicar por 2^EV,
         // exactamente como abrir el diafragma. (En RAW ya viene aplicada
-        // dentro del revelado, con calidad de sensor.)
+        // dentro del revelado, con calidad de sensor.) Al subir, se añade
+        // un hombro que protege las altas luces — calibrado contra el motor
+        // de referencia: recuperación de 0.65 EV por cada EV positivo.
         if p.exposicion != 0 && !decodificadoRAW {
             let filtro = CIFilter.exposureAdjust()
             filtro.inputImage = imagen
             filtro.ev = Float(p.exposicion)
             imagen = filtro.outputImage ?? imagen
+
+            if p.exposicion > 0 {
+                imagen = ajusteBandaTonal(imagen,
+                                          ev: -0.65 * p.exposicion,
+                                          rampa: [PuntoCurva(x: 0, y: 0),
+                                                  PuntoCurva(x: 0.45, y: 0),
+                                                  PuntoCurva(x: 0.85, y: 1),
+                                                  PuntoCurva(x: 1, y: 1)])
+            }
         }
 
         // ---- Las cuatro bandas tonales: altas luces, sombras, blancos y
@@ -596,9 +607,11 @@ final class MotorRevelado {
         //   · Sombras: banda baja ancha, se desvanece hacia los medios.
         //   · Blancos: solo el extremo superior (el punto blanco).
         //   · Negros: solo el extremo inferior (el punto negro).
+        // (Fuerzas y rampas CALIBRADAS contra el motor de referencia sobre
+        // exportaciones reales: mismas magnitudes al mover el mismo control.)
         if p.altasLuces != 0 {
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.altasLuces / 100.0 * 1.3,
+                                      ev: p.altasLuces / 100.0 * 0.6,
                                       rampa: [PuntoCurva(x: 0, y: 0),
                                               PuntoCurva(x: 0.45, y: 0),
                                               PuntoCurva(x: 0.85, y: 1),
@@ -606,7 +619,7 @@ final class MotorRevelado {
         }
         if p.sombras != 0 {
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.sombras / 100.0 * 1.5,
+                                      ev: p.sombras / 100.0 * 2.7,
                                       rampa: [PuntoCurva(x: 0, y: 1),
                                               PuntoCurva(x: 0.15, y: 1),
                                               PuntoCurva(x: 0.55, y: 0),
@@ -614,18 +627,18 @@ final class MotorRevelado {
         }
         if p.blancos != 0 {
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.blancos / 100.0 * 1.1,
+                                      ev: p.blancos / 100.0 * 0.3,
                                       rampa: [PuntoCurva(x: 0, y: 0),
-                                              PuntoCurva(x: 0.7, y: 0),
-                                              PuntoCurva(x: 0.96, y: 1),
+                                              PuntoCurva(x: 0.55, y: 0),
+                                              PuntoCurva(x: 0.9, y: 1),
                                               PuntoCurva(x: 1, y: 1)])
         }
         if p.negros != 0 {
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.negros / 100.0 * 1.1,
+                                      ev: p.negros / 100.0 * 2.8,
                                       rampa: [PuntoCurva(x: 0, y: 1),
                                               PuntoCurva(x: 0.04, y: 1),
-                                              PuntoCurva(x: 0.3, y: 0),
+                                              PuntoCurva(x: 0.4, y: 0),
                                               PuntoCurva(x: 1, y: 0)])
         }
 
@@ -641,11 +654,11 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
-        // Saturación global.
+        // Saturación global (factor 0.95 calibrado contra referencia).
         if p.saturacion != 0 {
             let filtro = CIFilter.colorControls()
             filtro.inputImage = imagen
-            filtro.saturation = Float(1.0 + p.saturacion / 100.0)
+            filtro.saturation = Float(1.0 + p.saturacion / 100.0 * 0.95)
             filtro.brightness = 0
             filtro.contrast = 1
             imagen = filtro.outputImage ?? imagen

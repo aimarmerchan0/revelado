@@ -109,8 +109,9 @@ enum ProcesadoColor {
     }
 
     /// La curva S del contraste: pivote en el gris medio, hombros suaves.
+    /// (Factor 0.08 calibrado contra el motor de referencia.)
     static func curvaContraste(_ contraste: Double) -> [PuntoCurva] {
-        let c = contraste / 100.0 * 0.10
+        let c = contraste / 100.0 * 0.08
         return [PuntoCurva(x: 0, y: 0),
                 PuntoCurva(x: 0.25, y: 0.25 - c),
                 PuntoCurva(x: 0.5, y: 0.5),
