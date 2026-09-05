@@ -109,9 +109,27 @@ enum ProcesadoColor {
     }
 
     /// La curva S del contraste: pivote en el gris medio, hombros suaves.
-    /// (Factor 0.08 calibrado contra el motor de referencia.)
+    /// Factor con anclas del barrido de calibración: la referencia aprieta
+    /// algo más al bajar contraste (0.11) que al subirlo (0.08-0.10).
     static func curvaContraste(_ contraste: Double) -> [PuntoCurva] {
-        let c = contraste / 100.0 * 0.08
+        let anclas: [(Double, Double)] = [(-100, 0.11), (-50, 0.11),
+                                          (50, 0.08), (100, 0.10)]
+        var factor = anclas.last!.1
+        if contraste <= anclas.first!.0 {
+            factor = anclas.first!.1
+        } else if contraste >= anclas.last!.0 {
+            factor = anclas.last!.1
+        } else {
+            for i in 0..<(anclas.count - 1) {
+                let a = anclas[i], b = anclas[i + 1]
+                if contraste >= a.0 && contraste <= b.0 {
+                    let t = (contraste - a.0) / (b.0 - a.0)
+                    factor = a.1 + (b.1 - a.1) * t
+                    break
+                }
+            }
+        }
+        let c = contraste / 100.0 * factor
         return [PuntoCurva(x: 0, y: 0),
                 PuntoCurva(x: 0.25, y: 0.25 - c),
                 PuntoCurva(x: 0.5, y: 0.5),

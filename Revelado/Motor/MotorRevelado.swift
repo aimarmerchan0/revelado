@@ -431,6 +431,26 @@ final class MotorRevelado {
         return (r / maximo, g / maximo, b / maximo)
     }
 
+    /// Interpola el multiplicador calibrado según el valor del deslizador.
+    /// Las anclas provienen del barrido completo contra el motor de
+    /// referencia (-100, -50, +50 y +100 medidos uno a uno): varios
+    /// controles de referencia son NO lineales y asimétricos, y esta
+    /// interpolación reproduce esa respuesta en todo el recorrido.
+    private func multiplicadorCalibrado(_ valor: Double,
+                                        _ anclas: [(Double, Double)]) -> Double {
+        guard let primera = anclas.first, let ultima = anclas.last else { return 1 }
+        if valor <= primera.0 { return primera.1 }
+        if valor >= ultima.0 { return ultima.1 }
+        for i in 0..<(anclas.count - 1) {
+            let a = anclas[i], b = anclas[i + 1]
+            if valor >= a.0 && valor <= b.0 {
+                let t = (valor - a.0) / (b.0 - a.0)
+                return a.1 + (b.1 - a.1) * t
+            }
+        }
+        return ultima.1
+    }
+
     /// El mecanismo compartido de las cuatro bandas tonales: construye una
     /// máscara de luminosidad (la rampa dice qué tonos entran y con cuánta
     /// caída), aplica exposición real dentro de la banda y funde con el
@@ -581,7 +601,7 @@ final class MotorRevelado {
         // exactamente como abrir el diafragma. (En RAW ya viene aplicada
         // dentro del revelado, con calidad de sensor.) Al subir, se añade
         // un hombro que protege las altas luces — calibrado contra el motor
-        // de referencia: recuperación de 0.65 EV por cada EV positivo.
+        // de referencia en +1 y +2 EV: recuperación de 0.78 EV por EV.
         if p.exposicion != 0 && !decodificadoRAW {
             let filtro = CIFilter.exposureAdjust()
             filtro.inputImage = imagen
@@ -590,7 +610,7 @@ final class MotorRevelado {
 
             if p.exposicion > 0 {
                 imagen = ajusteBandaTonal(imagen,
-                                          ev: -0.65 * p.exposicion,
+                                          ev: -0.78 * p.exposicion,
                                           rampa: [PuntoCurva(x: 0, y: 0),
                                                   PuntoCurva(x: 0.45, y: 0),
                                                   PuntoCurva(x: 0.85, y: 1),
@@ -607,35 +627,46 @@ final class MotorRevelado {
         //   · Sombras: banda baja ancha, se desvanece hacia los medios.
         //   · Blancos: solo el extremo superior (el punto blanco).
         //   · Negros: solo el extremo inferior (el punto negro).
-        // (Fuerzas y rampas CALIBRADAS contra el motor de referencia sobre
-        // exportaciones reales: mismas magnitudes al mover el mismo control.)
+        // (Fuerzas CALIBRADAS con anclas del barrido completo -100/-50/+50/
+        // +100 contra el motor de referencia: respuesta no lineal medida,
+        // no supuesta. La referencia recupera altas luces con más fuerza de
+        // la que las realza, y empasta negros mucho más fuerte de lo que
+        // los levanta.)
         if p.altasLuces != 0 {
+            let fuerza = multiplicadorCalibrado(p.altasLuces,
+                [(-100, 0.7), (-50, 0.6), (50, 0.4), (100, 0.3)])
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.altasLuces / 100.0 * 0.6,
+                                      ev: p.altasLuces / 100.0 * fuerza,
                                       rampa: [PuntoCurva(x: 0, y: 0),
                                               PuntoCurva(x: 0.45, y: 0),
                                               PuntoCurva(x: 0.85, y: 1),
                                               PuntoCurva(x: 1, y: 1)])
         }
         if p.sombras != 0 {
+            let fuerza = multiplicadorCalibrado(p.sombras,
+                [(-100, 2.5), (-50, 2.7), (50, 2.7), (100, 2.6)])
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.sombras / 100.0 * 2.7,
+                                      ev: p.sombras / 100.0 * fuerza,
                                       rampa: [PuntoCurva(x: 0, y: 1),
                                               PuntoCurva(x: 0.15, y: 1),
                                               PuntoCurva(x: 0.55, y: 0),
                                               PuntoCurva(x: 1, y: 0)])
         }
         if p.blancos != 0 {
+            let fuerza = multiplicadorCalibrado(p.blancos,
+                [(-100, 0.4), (-50, 0.3), (50, 0.4), (100, 0.3)])
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.blancos / 100.0 * 0.3,
+                                      ev: p.blancos / 100.0 * fuerza,
                                       rampa: [PuntoCurva(x: 0, y: 0),
                                               PuntoCurva(x: 0.55, y: 0),
                                               PuntoCurva(x: 0.9, y: 1),
                                               PuntoCurva(x: 1, y: 1)])
         }
         if p.negros != 0 {
+            let fuerza = multiplicadorCalibrado(p.negros,
+                [(-100, 5.0), (-50, 3.8), (50, 1.3), (100, 1.3)])
             imagen = ajusteBandaTonal(imagen,
-                                      ev: p.negros / 100.0 * 2.8,
+                                      ev: p.negros / 100.0 * fuerza,
                                       rampa: [PuntoCurva(x: 0, y: 1),
                                               PuntoCurva(x: 0.04, y: 1),
                                               PuntoCurva(x: 0.4, y: 0),
@@ -654,11 +685,14 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
-        // Saturación global (factor 0.95 calibrado contra referencia).
+        // Saturación global, con anclas del barrido: la referencia desatura
+        // a plena fuerza (1.0) pero satura con más suavidad (0.85).
         if p.saturacion != 0 {
+            let factor = multiplicadorCalibrado(p.saturacion,
+                [(-100, 1.0), (-50, 0.95), (50, 0.85), (100, 0.85)])
             let filtro = CIFilter.colorControls()
             filtro.inputImage = imagen
-            filtro.saturation = Float(1.0 + p.saturacion / 100.0 * 0.95)
+            filtro.saturation = Float(1.0 + p.saturacion / 100.0 * factor)
             filtro.brightness = 0
             filtro.contrast = 1
             imagen = filtro.outputImage ?? imagen
