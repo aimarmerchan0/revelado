@@ -856,18 +856,19 @@ struct EditorView: View {
     // Balance de blancos: cuentagotas y preajustes
     // =========================================================================
 
+    /// Preajustes en unidades del deslizador (la escala ya calibrada).
     private struct PreajusteBB {
         let nombre: String
-        let kelvin: Double
+        let temperatura: Double
         let matiz: Double
     }
     private static let preajustesBB: [PreajusteBB] = [
-        .init(nombre: "Luz de día", kelvin: 5500, matiz: 3),
-        .init(nombre: "Nublado", kelvin: 6500, matiz: 3),
-        .init(nombre: "Sombra", kelvin: 7500, matiz: 5),
-        .init(nombre: "Tungsteno", kelvin: 2850, matiz: 0),
-        .init(nombre: "Fluorescente", kelvin: 3800, matiz: 20),
-        .init(nombre: "Flash", kelvin: 5500, matiz: 0),
+        .init(nombre: "Luz de día", temperatura: 8, matiz: 3),
+        .init(nombre: "Nublado", temperatura: 18, matiz: 3),
+        .init(nombre: "Sombra", temperatura: 32, matiz: 5),
+        .init(nombre: "Tungsteno", temperatura: -85, matiz: 0),
+        .init(nombre: "Fluorescente", temperatura: -45, matiz: 25),
+        .init(nombre: "Flash", temperatura: 8, matiz: 0),
     ]
 
     private var cabeceraBalanceBlancos: some View {
@@ -915,18 +916,14 @@ struct EditorView: View {
     }
 
     private func aplicar(_ preajuste: PreajusteBB) {
-        let baseKelvin = foto.esRAW ? Double(basesRAW?.temperatura ?? 6500) : 6500
-        let baseMatiz = foto.esRAW ? Double(basesRAW?.tinte ?? 0) : 0
         withAnimation(.snappy) {
             parametros.puntoNeutroX = nil
             parametros.puntoNeutroY = nil
             parametros.neutroR = nil
             parametros.neutroG = nil
             parametros.neutroB = nil
-            parametros.temperatura = ((preajuste.kelvin - baseKelvin)
-                / MotorRevelado.kelvinPorUnidad).redondeadoA(-100...100)
-            parametros.matiz = ((preajuste.matiz - baseMatiz)
-                / MotorRevelado.matizPorUnidad).redondeadoA(-100...100)
+            parametros.temperatura = preajuste.temperatura
+            parametros.matiz = preajuste.matiz
         }
     }
 

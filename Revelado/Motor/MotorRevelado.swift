@@ -300,11 +300,26 @@ final class MotorRevelado {
     // única vez al dibujar (§5.4), en 16 bits y luz lineal (§5.1, §5.2).
     // =========================================================================
 
-    /// Conversión del deslizador de temperatura a Kelvin: ±100 ≈ ±3500 K,
-    /// suficiente para ir de tungsteno a sombra desde una base de luz día.
-    static let kelvinPorUnidad: Double = 35
+    /// Conversión del deslizador de temperatura a ΔKelvin, con las anclas
+    /// medidas contra el motor de referencia (adaptación Bradford): su
+    /// respuesta es empinada cerca del cero y se aplana en los extremos.
+    static func deltaKelvinCalibrado(_ valor: Double) -> Double {
+        let anclas: [(Double, Double)] = [(-100, -850), (-50, -720), (-20, -560),
+                                          (0, 0), (20, 280), (50, 460), (100, 600)]
+        if valor <= anclas.first!.0 { return anclas.first!.1 }
+        if valor >= anclas.last!.0 { return anclas.last!.1 }
+        for i in 0..<(anclas.count - 1) {
+            let a = anclas[i], b = anclas[i + 1]
+            if valor >= a.0 && valor <= b.0 {
+                let t = (valor - a.0) / (b.0 - a.0)
+                return a.1 + (b.1 - a.1) * t
+            }
+        }
+        return 0
+    }
+
     /// Conversión del deslizador de matiz al eje verde-magenta.
-    static let matizPorUnidad: Double = 0.4
+    static let matizPorUnidad: Double = 0.6
 
     /// Balance de blancos para fotos NO RAW (las RAW lo hacen dentro del
     /// revelado vía neutralTemperature/neutralTint/neutralLocation).
@@ -327,7 +342,7 @@ final class MotorRevelado {
             filtro.inputImage = imagen
             filtro.neutral = CIVector(x: 6500, y: 0)
             filtro.targetNeutral = CIVector(
-                x: 6500 + CGFloat(p.temperatura * Self.kelvinPorUnidad),
+                x: 6500 + CGFloat(Self.deltaKelvinCalibrado(p.temperatura)),
                 y: CGFloat(p.matiz * Self.matizPorUnidad))
             imagen = filtro.outputImage ?? imagen
         }
@@ -368,8 +383,10 @@ final class MotorRevelado {
         filtroRAW.neutralTint = bases.tinte
         configurarBalanceBlancosRAW(en: filtroRAW, parametros: p)
 
-        // Exposición a nivel de revelado: pasos EV reales sobre el sensor.
-        filtroRAW.exposure = bases.exposicion + Float(p.exposicion)
+        // La exposición del usuario NO se aplica aquí: pasa por la cadena
+        // calibrada (con su hombro medido) igual que en los no-RAW, para que
+        // el deslizador responda EXACTAMENTE igual en todos los archivos.
+        filtroRAW.exposure = bases.exposicion
 
         // Reducción de ruido del propio revelador (trabaja antes del
         // demosaicado final: mucho más limpia que un filtro posterior).
@@ -398,7 +415,7 @@ final class MotorRevelado {
         if p.temperatura != 0 || p.matiz != 0 {
             let baseT = filtroRAW.neutralTemperature
             let baseM = filtroRAW.neutralTint
-            filtroRAW.neutralTemperature = baseT + Float(p.temperatura * Self.kelvinPorUnidad)
+            filtroRAW.neutralTemperature = baseT + Float(Self.deltaKelvinCalibrado(p.temperatura))
             filtroRAW.neutralTint = baseM + Float(p.matiz * Self.matizPorUnidad)
         }
     }
@@ -493,6 +510,8 @@ final class MotorRevelado {
 
     /// Caché de tablas de color de los looks (se cargan del paquete una vez).
     private static var lutsCargadas: [String: Data] = [:]
+    /// Caché del último cubo de intensidad generado (valor, datos).
+    private static var cacheVibrance: (Double, Data?) = (0, nil)
 
     /// Carga la LUT de un look desde los recursos de la app.
     func cargarLUT(_ nombre: String) -> Data? {
@@ -598,11 +617,10 @@ final class MotorRevelado {
         var imagen = aplicarGeometria(a: origen, parametros: p)
 
         // Exposición: en luz lineal, sumar EV es multiplicar por 2^EV,
-        // exactamente como abrir el diafragma. (En RAW ya viene aplicada
-        // dentro del revelado, con calidad de sensor.) Al subir, se añade
-        // un hombro que protege las altas luces — calibrado contra el motor
-        // de referencia en +1 y +2 EV: recuperación de 0.78 EV por EV.
-        if p.exposicion != 0 && !decodificadoRAW {
+        // exactamente como abrir el diafragma. Se aplica en la MISMA cadena
+        // calibrada para todos los archivos (RAW incluido), con el hombro
+        // que protege las altas luces medido en +1/+2 EV (0.78 EV por EV).
+        if p.exposicion != 0 {
             let filtro = CIFilter.exposureAdjust()
             filtro.inputImage = imagen
             filtro.ev = Float(p.exposicion)
@@ -698,12 +716,23 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
-        // Intensidad (vibrance): satura protegiendo lo que ya está saturado
-        // y los tonos de piel.
+        // Intensidad (vibrance): fórmula propia anclada al barrido de
+        // referencia — satura con fuerza lo poco saturado y protege lo ya
+        // saturado. Va como cubo de color, cacheado por valor.
         if p.intensidad != 0 {
-            let filtro = CIFilter.vibrance()
+            let clave = (p.intensidad * 2).rounded() / 2
+            let cubo: Data
+            if let cacheado = Self.cacheVibrance.1, Self.cacheVibrance.0 == clave {
+                cubo = cacheado
+            } else {
+                cubo = ProcesadoColor.generarCuboVibrance(clave)
+                Self.cacheVibrance = (clave, cubo)
+            }
+            let filtro = CIFilter.colorCubeWithColorSpace()
             filtro.inputImage = imagen
-            filtro.amount = Float(p.intensidad / 100.0)
+            filtro.cubeData = cubo
+            filtro.cubeDimension = 33
+            filtro.colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
             imagen = filtro.outputImage ?? imagen
         }
 

@@ -209,6 +209,47 @@ enum ProcesadoColor {
         return datos.withUnsafeBufferPointer { Data(buffer: $0) }
     }
 
+    /// Cubo de INTENSIDAD (vibrance) con fórmula propia anclada al barrido:
+    /// satura con más fuerza lo poco saturado y protege lo ya saturado.
+    /// s' = s + (v/100)·factor(v)·s·(1-s)·2, con el factor medido por ancla.
+    static func generarCuboVibrance(_ cantidad: Double, dimension: Int = 33) -> Data {
+        let anclas: [(Double, Double)] = [(-100, 1.35), (-50, 0.90),
+                                          (50, 0.50), (100, 0.75)]
+        var factor = anclas.last!.1
+        if cantidad <= anclas.first!.0 { factor = anclas.first!.1 }
+        else if cantidad >= anclas.last!.0 { factor = anclas.last!.1 }
+        else {
+            for i in 0..<(anclas.count - 1) {
+                let a = anclas[i], b = anclas[i + 1]
+                if cantidad >= a.0 && cantidad <= b.0 {
+                    let t = (cantidad - a.0) / (b.0 - a.0)
+                    factor = a.1 + (b.1 - a.1) * t
+                    break
+                }
+            }
+        }
+        let v = cantidad / 100.0
+
+        var datos = [Float]()
+        datos.reserveCapacity(dimension * dimension * dimension * 4)
+        for b in 0..<dimension {
+            for g in 0..<dimension {
+                for r in 0..<dimension {
+                    let rf = Double(r) / Double(dimension - 1)
+                    let gf = Double(g) / Double(dimension - 1)
+                    let bf = Double(b) / Double(dimension - 1)
+                    var (h, s, val) = rgbAHsv(rf, gf, bf)
+                    let s2 = min(1, max(0, s + v * factor * s * (1 - s) * 2))
+                    s = s2
+                    let (nr, ng, nb) = hsvARgb(h, s, val)
+                    datos.append(Float(nr)); datos.append(Float(ng))
+                    datos.append(Float(nb)); datos.append(1)
+                }
+            }
+        }
+        return datos.withUnsafeBufferPointer { Data(buffer: $0) }
+    }
+
     // --- Conversión RGB <-> HSV clásica ---
 
     static func rgbAHsv(_ r: Double, _ g: Double, _ b: Double) -> (Double, Double, Double) {
