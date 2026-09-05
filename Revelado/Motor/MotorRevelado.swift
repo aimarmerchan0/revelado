@@ -924,34 +924,45 @@ final class MotorRevelado {
             }
         }
 
-        // Grano de película, lo último de todo: ruido monocromo estable
-        // (mismo patrón en cada render) fundido en luz suave.
-        // La amplitud sigue una curva de potencia para que el deslizador
-        // tenga gradación real: a 10 se insinúa, a 50 está presente, a 100
-        // es marcado — nada de "todo o nada".
+        // Grano de película, lo último de todo: ruido monocromo ADITIVO —
+        // la misma física del revelado de referencia que aprobó el usuario.
+        // Verificado en banco de pruebas: gradación real (a 20 sutil, a 50
+        // presente, a 100 marcado), visible también en cielos claros (la
+        // luz suave se apagaba cerca del blanco: por eso parecía un
+        // interruptor), y partícula proporcional a la imagen para que
+        // sobreviva a la reducción del visor y la exportación sea idéntica.
         if p.grano > 0 {
-            let intensidad = CGFloat(pow(p.grano / 100.0, 0.75)) * 0.10
+            let amplitud = CGFloat(pow(p.grano / 100.0, 0.7)) * 0.104
             if let ruidoBruto = CIFilter.randomGenerator().outputImage {
-                let luma = CIVector(x: 1.0 / 3, y: 1.0 / 3, z: 1.0 / 3, w: 0)
-                let gris = CIFilter.colorMatrix()
-                // El tamaño del grano escala con la imagen: mismo aspecto en
-                // la previsualización y en la exportación a resolución completa.
-                let escalaGrano = max(1.2, imagen.extent.width / 2200)
-                gris.inputImage = ruidoBruto.transformed(by: .init(scaleX: escalaGrano,
-                                                                   y: escalaGrano))
-                gris.rVector = CIVector(x: luma.x * intensidad, y: luma.y * intensidad, z: luma.z * intensidad, w: 0)
-                gris.gVector = gris.rVector
-                gris.bVector = gris.rVector
-                gris.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
-                // Centrado en el gris medio: en luz suave, 0.5 = sin cambio.
-                let centro = 0.5 - intensidad / 2
-                gris.biasVector = CIVector(x: centro, y: centro, z: centro, w: 0)
+                // Partícula ~3 px en previsualización, escalando con el ancho.
+                let escalaGrano = max(2.0, imagen.extent.width / 900)
 
-                if let granoListo = gris.outputImage?.cropped(to: imagen.extent) {
-                    let fusion = CIFilter.softLightBlendMode()
-                    fusion.inputImage = granoListo
-                    fusion.backgroundImage = imagen
-                    imagen = fusion.outputImage ?? imagen
+                // Ruido delta centrado en cero: un solo canal del generador,
+                // escalado a ±amplitud/2 (los valores negativos existen sin
+                // problema en el formato de trabajo en coma flotante).
+                let delta = CIFilter.colorMatrix()
+                delta.inputImage = ruidoBruto.transformed(by: .init(scaleX: escalaGrano,
+                                                                    y: escalaGrano))
+                delta.rVector = CIVector(x: amplitud, y: 0, z: 0, w: 0)
+                delta.gVector = CIVector(x: amplitud, y: 0, z: 0, w: 0)
+                delta.bVector = CIVector(x: amplitud, y: 0, z: 0, w: 0)
+                delta.aVector = CIVector(x: 0, y: 0, z: 0, w: 1)
+                let centro = -amplitud / 2
+                delta.biasVector = CIVector(x: centro, y: centro, z: centro, w: 0)
+
+                if let granoListo = delta.outputImage?.cropped(to: imagen.extent) {
+                    let suma = CIFilter.additionCompositing()
+                    suma.inputImage = granoListo
+                    suma.backgroundImage = imagen
+                    if let conGrano = suma.outputImage {
+                        // Evitar negativos en sombras profundas.
+                        let clamp = CIFilter.colorClamp()
+                        clamp.inputImage = conGrano
+                        clamp.minComponents = CIVector(x: 0, y: 0, z: 0, w: 0)
+                        clamp.maxComponents = CIVector(x: 65504, y: 65504,
+                                                       z: 65504, w: 65504)
+                        imagen = clamp.outputImage ?? imagen
+                    }
                 }
             }
         }
