@@ -57,20 +57,22 @@ enum Looks {
 
     static let integrados: [LookIntegrado] = [
         LookIntegrado(nombre: "Dorado 70", simbolo: "sun.haze.fill", receta: receta { p in
-            // El estilo calibrado con Aimar sobre su foto de la costa:
-            // baño ámbar, negros mate, verdes hacia ocre, grano presente.
-            p.temperatura = 14; p.matiz = 2
-            p.contraste = 10; p.blancos = -14; p.sombras = 6
-            p.saturacion = -15
+            // El estilo calibrado con Aimar (versión 1A5, cálido con
+            // halación): baño ámbar vivo, medios luminosos, negros mate,
+            // verdes hacia ocre y resplandor de película en las luces.
+            p.temperatura = 16; p.matiz = 2
+            p.contraste = 10; p.blancos = -12; p.sombras = 8
+            p.saturacion = -6
             p.curvaLuma = [PuntoCurva(x: 0, y: 0.055),
-                           PuntoCurva(x: 0.25, y: 0.26),
-                           PuntoCurva(x: 0.75, y: 0.79),
-                           PuntoCurva(x: 1, y: 0.955)]
-            p.hsl[3].tono = 18; p.hsl[3].saturacion = -25   // verdes → ocre
-            p.hsl[2].saturacion = -10                        // amarillos calmados
-            p.vineta = -18; p.grano = 30
-            // Con las herramientas nuevas, el viraje real del estilo:
-            p.virajeLuces = 30; p.virajeSombras = 18
+                           PuntoCurva(x: 0.25, y: 0.27),
+                           PuntoCurva(x: 0.5, y: 0.565),
+                           PuntoCurva(x: 0.75, y: 0.81),
+                           PuntoCurva(x: 1, y: 0.96)]
+            p.hsl[3].tono = 16; p.hsl[3].saturacion = -20   // verdes → ocre
+            p.hsl[2].saturacion = -8                         // amarillos calmados
+            p.vineta = -16; p.grano = 28
+            p.virajeLuces = 32; p.virajeSombras = 20
+            p.halacion = 20
         }),
         LookIntegrado(nombre: "Vivo", simbolo: "sun.max.fill", receta: receta { p in
             p.contraste = 15; p.intensidad = 28; p.saturacion = 5
