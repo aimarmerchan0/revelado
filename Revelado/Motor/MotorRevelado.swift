@@ -785,6 +785,20 @@ final class MotorRevelado {
             imagen = filtro.outputImage ?? imagen
         }
 
+        // =====================================================================
+        // BLOQUE DE EFECTOS EN DOMINIO sRGB. Los efectos de aquí abajo
+        // (viraje, neblina, viñeta, halación, grano) están calibrados en
+        // valores perceptuales (con gamma), no en luz lineal: ejecutarlos en
+        // lineal los exagera brutalmente (un grano suave se vuelve nevada,
+        // un tinte leve se vuelve tintazo). Se convierte UNA vez a sRGB, se
+        // hacen todos, y se vuelve a lineal al final del bloque.
+        // =====================================================================
+        let hayEfectosGamma = p.virajeLuces != 0 || p.virajeSombras != 0
+            || p.neblina > 0 || p.vineta != 0 || p.halacion > 0 || p.grano > 0
+        if hayEfectosGamma {
+            imagen = imagen.applyingFilter("CILinearToSRGBToneCurve")
+        }
+
         // Viraje partido: teñir las luces y las sombras por separado, como
         // los virajes químicos de laboratorio. Positivo = cálido (ámbar),
         // negativo = frío (azulado). Usa las mismas máscaras tonales suaves
@@ -898,9 +912,11 @@ final class MotorRevelado {
         }
 
         // Grano de película, lo último de todo: ruido monocromo estable
-        // (mismo patrón en cada render) fundido en luz suave.
+        // (mismo patrón en cada render) fundido en luz suave. La amplitud
+        // está calibrada contra el revelado de referencia (grano 28 ≈
+        // desviación 0.013 en valores de pantalla).
         if p.grano > 0 {
-            let intensidad = CGFloat(p.grano / 100.0) * 0.35
+            let intensidad = CGFloat(p.grano / 100.0) * 0.045
             if let ruidoBruto = CIFilter.randomGenerator().outputImage {
                 let luma = CIVector(x: 1.0 / 3, y: 1.0 / 3, z: 1.0 / 3, w: 0)
                 let gris = CIFilter.colorMatrix()
@@ -921,6 +937,11 @@ final class MotorRevelado {
                     imagen = fusion.outputImage ?? imagen
                 }
             }
+        }
+
+        // Cierre del bloque de efectos: de vuelta a luz lineal (§5.2).
+        if hayEfectosGamma {
+            imagen = imagen.applyingFilter("CISRGBToneCurveToLinear")
         }
 
         return imagen
